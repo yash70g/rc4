@@ -11,11 +11,11 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 
 import * as CacheManager from '../services/CacheManager';
-import * as MeshManager from '../services/MeshManager';
+import MeshManager from '../services/MeshManager';
 
 export default function HomeScreen({ navigation }) {
   const [stats, setStats] = useState({ count: 0, totalSize: 0 });
-  const [meshStats, setMeshStats] = useState({ totalPages: 0, totalDevices: 0 });
+  const [meshStats, setMeshStats] = useState({ nearbyDevices: 0, connectedPeers: 0, peerPages: 0 });
   const [connected, setConnected] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const pulseAnim = useState(new Animated.Value(1))[0];
@@ -24,7 +24,7 @@ export default function HomeScreen({ navigation }) {
     try {
       const s = await CacheManager.getStats();
       setStats(s);
-      setMeshStats(MeshManager.getKnowledgeRadius());
+      setMeshStats(MeshManager.getNetworkStats());
       setConnected(MeshManager.isConnected());
     } catch (e) {
       console.log('Error loading stats:', e);
@@ -33,16 +33,19 @@ export default function HomeScreen({ navigation }) {
 
   useEffect(() => {
     loadData();
+    const interval = setInterval(loadData, 5000); // Refresh stats every 5 seconds
+    return () => clearInterval(interval);
   }, [loadData]);
 
   useEffect(() => {
-    const onStatsUpdate = (data) => setMeshStats(data);
-    const onConnected = () => setConnected(true);
-    const onDisconnected = () => setConnected(false);
+    const onStatsUpdate = () => setMeshStats(MeshManager.getNetworkStats());
+    const onConnectionUpdate = () => setConnected(MeshManager.isConnected());
+    const onPageReceived = () => loadData();
 
-    MeshManager.on('stats-update', onStatsUpdate);
-    MeshManager.on('connected', onConnected);
-    MeshManager.on('disconnected', onDisconnected);
+    MeshManager.on('nearby-devices-update', onStatsUpdate);
+    MeshManager.on('connected-peers-update', onConnectionUpdate);
+    MeshManager.on('catalog-update', onStatsUpdate);
+    MeshManager.on('page-received', onPageReceived);
 
     // Pulse animation for connection indicator
     Animated.loop(
@@ -53,9 +56,10 @@ export default function HomeScreen({ navigation }) {
     ).start();
 
     return () => {
-      MeshManager.off('stats-update', onStatsUpdate);
-      MeshManager.off('connected', onConnected);
-      MeshManager.off('disconnected', onDisconnected);
+      MeshManager.off('nearby-devices-update', onStatsUpdate);
+      MeshManager.off('connected-peers-update', onConnectionUpdate);
+      MeshManager.off('catalog-update', onStatsUpdate);
+      MeshManager.off('page-received', onPageReceived);
     };
   }, []);
 
@@ -74,7 +78,7 @@ export default function HomeScreen({ navigation }) {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.logo}>⚡ Reality Cache</Text>
-        <Text style={styles.subtitle}>Mesh v3</Text>
+        <Text style={styles.subtitle}>P2P Mesh</Text>
       </View>
 
       {/* Knowledge Radius Card */}
@@ -83,7 +87,7 @@ export default function HomeScreen({ navigation }) {
         <Ionicons name="globe-outline" size={40} color="#6c63ff" />
         <Text style={styles.radiusTitle}>Knowledge Radius</Text>
         <Text style={styles.radiusCount}>
-          {stats.count + meshStats.totalPages}
+          {stats.count + meshStats.peerPages}
         </Text>
         <Text style={styles.radiusLabel}>
           pages accessible
@@ -92,13 +96,13 @@ export default function HomeScreen({ navigation }) {
           <View style={styles.radiusChip}>
             <Ionicons name="phone-portrait-outline" size={14} color="#e0e0e0" />
             <Text style={styles.radiusChipText}>
-              {meshStats.totalDevices + (connected ? 1 : 0)} devices
+              {meshStats.nearbyDevices} nearby • {meshStats.connectedPeers} connected
             </Text>
           </View>
           <View style={styles.radiusChip}>
             <Ionicons name="document-outline" size={14} color="#e0e0e0" />
             <Text style={styles.radiusChipText}>
-              {stats.count} local • {meshStats.totalPages} mesh
+              {stats.count} local • {meshStats.peerPages} peers
             </Text>
           </View>
         </View>

@@ -18,6 +18,8 @@ export async function initCache() {
 
   // Open SQLite database
   db = await SQLite.openDatabaseAsync('realitycache.db');
+  
+  // Initialize schema
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS pages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,10 +33,11 @@ export async function initCache() {
       accessCount INTEGER DEFAULT 1,
       source TEXT DEFAULT 'local',
       createdAt INTEGER DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_hash ON pages(hash);
-    CREATE INDEX IF NOT EXISTS idx_url ON pages(url);
+    )
   `);
+  
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON pages(hash)');
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_url ON pages(url)');
 
   return db;
 }

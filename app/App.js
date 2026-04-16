@@ -3,20 +3,51 @@ import { StatusBar } from 'expo-status-bar';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import AppNavigator from './src/navigation/AppNavigator';
 import { initCache } from './src/services/CacheManager';
+import MeshManager from './src/services/MeshManager';
 
 export default function App() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    let didCleanup = false;
+
     async function boot() {
+      // ── 1. Cache is critical — await it ───────────────────────────
       try {
         await initCache();
       } catch (e) {
-        console.log('Cache init error:', e);
+        console.warn('Cache init error (continuing anyway):', e);
       }
-      setReady(true);
+
+      // ── 2. Mesh/BLE is best-effort — don't block the app ────────
+      //    In Expo Go the native BLE module isn't available, so
+      //    MeshManager.start() may throw or hang. Fire-and-forget.
+      try {
+        MeshManager.start().catch((e) =>
+          console.warn('MeshManager.start background error:', e)
+        );
+      } catch (e) {
+        console.warn('MeshManager.start sync error:', e);
+      }
+
+      if (!didCleanup) setReady(true);
     }
+
     boot();
+
+    // Hard safety timeout — always clear the splash after 5 s
+    const safetyTimer = setTimeout(() => {
+      setReady((prev) => {
+        if (!prev) console.warn('Boot safety timeout — forcing ready');
+        return true;
+      });
+    }, 5000);
+
+    return () => {
+      didCleanup = true;
+      clearTimeout(safetyTimer);
+      MeshManager.stop();
+    };
   }, []);
 
   if (!ready) {

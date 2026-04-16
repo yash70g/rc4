@@ -12,7 +12,7 @@ import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
 import { processHtml } from '../services/PageProcessor';
 import * as CacheManager from '../services/CacheManager';
-import * as MeshManager from '../services/MeshManager';
+import MeshManager from '../services/MeshManager';
 
 const SEARCH_ENGINE = 'https://www.google.com/search?q=';
 
@@ -97,7 +97,7 @@ export default function BrowserScreen({ navigation }) {
       const result = await CacheManager.storeSnapshot(currentUrl, title, html);
 
       // Share updated catalog with mesh
-      MeshManager.shareCatalog();
+      await MeshManager.shareCatalog();
 
       if (result.deduplicated) {
         Alert.alert('Already Cached', `"${title}" is already in your cache.`);
