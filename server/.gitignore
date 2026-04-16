@@ -1,0 +1,8 @@
+node_modules/
+.expo/
+android/
+ios/
+*.log
+
+# YOUR ISSUE
+server/pc-cache/
