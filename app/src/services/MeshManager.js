@@ -225,6 +225,13 @@ class MeshManager {
     const device = this.nearbyDevices.get(deviceId);
     const bleId = device?.bleDeviceId || deviceId;
 
+    // 1. Stop scanning before connecting — critical for Android stability
+    if (BLEManager.isScanning()) {
+      await BLEManager.stopScanning();
+      // Give the radio a moment to settle
+      await new Promise(r => setTimeout(r, 500));
+    }
+
     // Store the mapping so incoming messages can be resolved
     this.bleIdMap.set(bleId, deviceId);
 

@@ -266,6 +266,10 @@ class BLEManager {
     this.emit('scan-state', { scanning: false });
   }
 
+  isScanning() {
+    return this.scanning;
+  }
+
   injectMockDevice(device) {
     const normalized = normalizeMetadata(device);
     if (normalized.deviceId === this.localMetadata.deviceId) return;

@@ -31,12 +31,12 @@ const SERVICE_UUID = 'CAFE0001-C0DE-FACE-B00C-CAFE01234567';
 const RX_CHAR_UUID = 'CAFE0002-C0DE-FACE-B00C-CAFE01234567';
 const TX_CHAR_UUID = 'CAFE0003-C0DE-FACE-B00C-CAFE01234567';
 
-// BLE chunk size — must be below negotiated MTU (typically 512, we keep 480 to be safe)
-const BLE_CHUNK_SIZE = 480;
+// BLE chunk size — 150 is the ultra-safe compatibility limit for all Android GATT stacks
+const BLE_CHUNK_SIZE = 150;
 
 // Delimiter for BLE-level chunk framing
-const CHUNK_START = '\x01';
-const CHUNK_END = '\x02';
+const CHUNK_START = '---RC-START---';
+const CHUNK_END = '---RC-END---';
 
 class BLETransport {
   constructor() {
@@ -105,13 +105,21 @@ class BLETransport {
     }
 
     try {
-      // Connect to the peripheral
+      // 0. Ensure any stale connection is cleared
+      try {
+        await this.bleManager.cancelDeviceConnection(deviceId);
+        await this._delay(500); // Wait for disconnect to propagate
+      } catch (e) {
+        // Not connected or error clearing — ignore
+      }
+
+      // 1. Connect to the peripheral
       const device = await this.bleManager.connectToDevice(deviceId, {
         requestMTU: 512,
         timeout: 10000,
       });
 
-      // Discover services and characteristics
+      // 2. Discover services and characteristics
       await device.discoverAllServicesAndCharacteristics();
 
       // Find our service
@@ -237,7 +245,7 @@ class BLETransport {
       await rxChar.writeWithoutResponse(encoded);
       // Small delay between chunks to avoid flooding
       if (chunks.length > 1) {
-        await this._delay(20);
+        await this._delay(40);
       }
     }
   }
@@ -251,7 +259,7 @@ class BLETransport {
     for (const chunk of chunks) {
       await ExoBlePeripheral.sendNotification(centralId, chunk);
       if (chunks.length > 1) {
-        await this._delay(20);
+        await this._delay(40);
       }
     }
   }
@@ -268,24 +276,56 @@ class BLETransport {
 
     // Check for complete messages (delimited by CHUNK_START and CHUNK_END)
     while (true) {
-      const startIdx = buffer.indexOf(CHUNK_START);
-      const endIdx = buffer.indexOf(CHUNK_END);
+      const firstStart = buffer.indexOf(CHUNK_START);
+      if (firstStart === -1) break;
 
-      if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-        break;
+      // RECOVERY: Is there ANOTHER start marker before we hit an end marker?
+      // If so, the first one was part of a truncated/lost frame. Discard it.
+      const nextStart = buffer.indexOf(CHUNK_START, firstStart + CHUNK_START.length);
+      const firstEnd = buffer.indexOf(CHUNK_END, firstStart + CHUNK_START.length);
+
+      if (nextStart !== -1 && (firstEnd === -1 || nextStart < firstEnd)) {
+        // Recovery: Skip the corrupted segment and start from the fresh marker
+        buffer = buffer.substring(nextStart);
+        continue;
       }
 
-      const message = buffer.substring(startIdx + 1, endIdx);
-      buffer = buffer.substring(endIdx + 1);
+      if (firstEnd === -1) break;
+
+      let rawMessage = buffer.substring(firstStart + CHUNK_START.length, firstEnd);
+      
+      // Advance buffer past the current frame
+      buffer = buffer.substring(firstEnd + CHUNK_END.length);
+
+      // Sanitize the message: Remove ALL control characters (ASCII 0-31)
+      let sanitizedMessage = rawMessage.replace(/[\x00-\x1F]/g, '').trim();
+
+      // Extract only the part starting with { and ending with }
+      const startBrace = sanitizedMessage.indexOf('{');
+      const endBrace = sanitizedMessage.lastIndexOf('}');
+      if (startBrace !== -1 && endBrace !== -1 && endBrace > startBrace) {
+        sanitizedMessage = sanitizedMessage.substring(startBrace, endBrace + 1);
+      } else {
+        continue;
+      }
 
       // Parse and emit the complete frame
       try {
-        const frame = JSON.parse(message);
-        if (this.onFrameReceived) {
-          this.onFrameReceived(deviceId, frame);
+        const frame = JSON.parse(sanitizedMessage);
+        
+        // Map compressed keys back to original names for backward compatibility
+        const normalizedFrame = {
+          kind: frame.f || frame.kind,
+          payload: frame.p || frame.payload
+        };
+
+        if (this.onFrameReceived && normalizedFrame.kind) {
+          this.onFrameReceived(deviceId, normalizedFrame);
         }
       } catch (e) {
-        console.warn('[BLETransport] Failed to parse frame:', e.message);
+        console.warn(`[BLETransport] Frame parse failed (${sanitizedMessage.length} bytes):`, e.message);
+        console.log(`[BLETransport] Start char codes: [${sanitizedMessage.slice(0, 10).split('').map(c => c.charCodeAt(0)).join(', ')}]`);
+        console.log('[BLETransport] Raw snippet:', sanitizedMessage.slice(0, 100));
       }
     }
 
