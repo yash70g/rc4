@@ -31,8 +31,8 @@ const SERVICE_UUID = 'CAFE0001-C0DE-FACE-B00C-CAFE01234567';
 const RX_CHAR_UUID = 'CAFE0002-C0DE-FACE-B00C-CAFE01234567';
 const TX_CHAR_UUID = 'CAFE0003-C0DE-FACE-B00C-CAFE01234567';
 
-// BLE chunk size — 150 is the ultra-safe compatibility limit for all Android GATT stacks
-const BLE_CHUNK_SIZE = 150;
+// BLE chunk size — 400 allows room for our 300-byte logical payload + JSON/Base64 overhead
+const BLE_CHUNK_SIZE = 400;
 
 // Delimiter for BLE-level chunk framing
 const CHUNK_START = '---RC-START---';
@@ -314,7 +314,9 @@ class BLETransport {
         const frame = JSON.parse(sanitizedMessage);
         
         // Map compressed keys back to original names for backward compatibility
+        // while preserving all other metadata (m, i, t, etc.)
         const normalizedFrame = {
+          ...frame,
           kind: frame.f || frame.kind,
           payload: frame.p || frame.payload
         };

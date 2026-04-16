@@ -1,8 +1,7 @@
 import BLETransport from './BLETransport';
 
-// Logical chunk size - 3000 lets small things like catalogs go in one frame
-// but keeps large things like page data manageable for the transport's physical chunks.
-const CHUNK_BYTES = 3000;
+// Logical chunk size - 300 is a safe speed/stability balance for modern Android
+const CHUNK_BYTES = 300;
 
 function makeMessageId() {
   return `msg-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
@@ -11,32 +10,22 @@ function makeMessageId() {
 // ── Pure JS Base64 (Hermes & Android Compatible) ─────────────────────
 const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
 
-function base64Encode(input) {
-  let str = String(input);
-  let output = '';
-  for (let block, charCode, idx = 0, map = chars;
-    str.charAt(idx | 0) || (map = '=', idx % 1);
-    output += map.charAt(63 & block >> 8 - idx % 1 * 8)
-  ) {
-    charCode = str.charCodeAt(idx += 3 / 4);
-    if (charCode > 0xFF) throw new Error("'base64Encode' failed: The string to be encoded contains characters outside of the Latin1 range.");
-    block = block << 8 | charCode;
+function base64Encode(str) {
+  try {
+    // UTF-8 safe encoding for React Native/Hermes
+    return btoa(unescape(encodeURIComponent(str)));
+  } catch (e) {
+    return btoa(str);
   }
-  return output;
 }
 
-function base64Decode(input) {
-  let str = String(input).replace(/[=]+$/, '');
-  let output = '';
-  if (str.length % 4 == 1) throw new Error("'base64Decode' failed: The string to be decoded is not correctly encoded.");
-  for (let bc = 0, bs, buffer, idx = 0;
-    buffer = str.charAt(idx++);
-    ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer,
-      bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0
-  ) {
-    buffer = chars.indexOf(buffer);
+function base64Decode(str) {
+  try {
+    // UTF-8 safe decoding for React Native/Hermes
+    return decodeURIComponent(escape(atob(str)));
+  } catch (e) {
+    return atob(str);
   }
-  return output;
 }
 
 class PeerConnectionManager {
@@ -147,7 +136,7 @@ class PeerConnectionManager {
     return this.connectedPeers.has(deviceId);
   }
 
-  sendMessage(deviceId, data) {
+  async sendMessage(deviceId, data) {
     if (!this.connectedPeers.has(deviceId)) {
       console.warn('[PeerConnection] Not connected to:', deviceId);
       return false;
@@ -160,7 +149,7 @@ class PeerConnectionManager {
       const rawPayload = JSON.stringify(data);
       
       if (rawPayload.length <= CHUNK_BYTES) {
-        this._sendFrame(bleId, {
+        await this._sendFrame(bleId, {
           f: 'message',
           p: base64Encode(rawPayload),
         });
@@ -174,13 +163,17 @@ class PeerConnectionManager {
         const start = i * CHUNK_BYTES;
         const end = start + CHUNK_BYTES;
         const chunk = rawPayload.slice(start, end);
-        this._sendFrame(bleId, {
+        
+        await this._sendFrame(bleId, {
           f: 'chunk',
           m: messageId,
           i,
           t: totalChunks,
           p: base64Encode(chunk),
         });
+
+        // Small delay between logical chunks to avoid flooding the radio
+        await new Promise(r => setTimeout(r, 100));
       }
 
       return true;
@@ -250,7 +243,12 @@ class PeerConnectionManager {
 
   _emitCompleteMessage(deviceId, payload) {
     try {
-      const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      // Final sanitization of the decoded string before parsing
+      const sanitized = typeof payload === 'string' 
+        ? payload.replace(/[\x00-\x1F]/g, '').trim() 
+        : payload;
+        
+      const data = typeof sanitized === 'string' ? JSON.parse(sanitized) : sanitized;
       console.log(`[PeerConnection] Incoming: ${data.type} from ${deviceId}`);
       this.emit('message', { deviceId, data });
     } catch (e) {
