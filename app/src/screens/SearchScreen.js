@@ -34,8 +34,19 @@ export default function SearchScreen({ navigation }) {
       }
     };
 
+    const onPermissionPending = ({ hash }) => {
+      if (hash && hash === requestingHash) {
+        // Just let the spinner continue, but we could add a state if we wanted
+        console.log('[Search] Permission pending for:', hash);
+      }
+    };
+
     MeshManager.on('page-received', onPageReceived);
-    return () => MeshManager.off('page-received', onPageReceived);
+    MeshManager.on('permission-pending', onPermissionPending);
+    return () => {
+      MeshManager.off('page-received', onPageReceived);
+      MeshManager.off('permission-pending', onPermissionPending);
+    };
   }, [requestingHash, query]);
 
   useEffect(() => {
@@ -125,11 +136,14 @@ export default function SearchScreen({ navigation }) {
           <ListItem
             title={item.title}
             subtitle={item.source === 'mesh' ? `Peer: ${item.deviceId?.slice(0, 8) || 'unknown'}` : (item.url.length > 40 ? item.url.substring(0, 37) + '...' : item.url)}
-            icon={<FontAwesome name={item.source === 'mesh' ? 'share-alt' : 'file-text-o'} />}
+            icon={<FontAwesome name={item.source === 'mesh' ? (item.isPrivate ? 'lock' : 'share-alt') : 'file-text-o'} color={item.isPrivate ? theme.accent : null} />}
             onPress={() => viewResult(item)}
             rightElement={
               requestingHash === item.hash ? (
-                <ActivityIndicator size="small" color={theme.primary} />
+                <View style={{ alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={theme.primary} />
+                  <Text style={{ fontSize: 8, color: theme.textSecondary, marginTop: 2 }}>PENDING</Text>
+                </View>
               ) : (
                 <View style={[styles.sourceBadge, { backgroundColor: item.source === 'mesh' ? `${theme.accent}15` : `${theme.primary}15` }]}>
                   <Text style={[styles.sourceText, { color: item.source === 'mesh' ? theme.accent : theme.primary }]}>

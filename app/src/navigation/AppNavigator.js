@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { View, TouchableOpacity, Text, StyleSheet } from 'react-native';
+import { View, TouchableOpacity, Text, StyleSheet, Alert } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
+import MeshManager from '../services/MeshManager';
+import React, { useState, useEffect } from 'react';
 
 import HomeScreen from '../screens/HomeScreen';
 import BrowserScreen from '../screens/BrowserScreen';
@@ -30,6 +31,22 @@ export default function AppNavigator() {
   const { theme, isDark } = useTheme();
   const [activeTab, setActiveTab] = useState('Home');
   const [viewerHash, setViewerHash] = useState(null);
+
+  useEffect(() => {
+    const onPermissionRequested = ({ deviceId, hash, title, peerName }) => {
+      Alert.alert(
+        'Permission Requested',
+        `"${peerName}" [ID: ${deviceId.slice(0, 6)}] wants to download your private page: "${title}".`,
+        [
+          { text: 'Deny', style: 'cancel', onPress: () => MeshManager.denyRequest(deviceId, hash) },
+          { text: 'Allow', onPress: () => MeshManager.approveRequest(deviceId, hash) },
+        ]
+      );
+    };
+
+    MeshManager.on('permission-requested', onPermissionRequested);
+    return () => MeshManager.off('permission-requested', onPermissionRequested);
+  }, []);
 
   const navigation = {
     navigate: (screen, params) => {

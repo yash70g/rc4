@@ -50,6 +50,12 @@ export default function CacheScreen({ navigation }) {
     setRefreshing(false);
   };
 
+  const togglePrivacy = async (item) => {
+    const nextPrivate = item.isPrivate ? 0 : 1;
+    await CacheManager.updatePrivacy(item.hash, nextPrivate);
+    loadPages();
+  };
+
   const deletePage = (hash, title) => {
     Alert.alert('Delete Page', `Remove "${title}" from cache?`, [
       { text: 'Cancel', style: 'cancel' },
@@ -66,16 +72,27 @@ export default function CacheScreen({ navigation }) {
 
   const renderItem = ({ item }) => {
     const displayUrl = item.url.length > 40 ? item.url.substring(0, 37) + '...' : item.url;
+    const isPrivate = !!item.isPrivate;
+
     return (
       <ListItem
         title={item.title}
         subtitle={`${displayUrl}\n${CacheManager.formatSize(item.size)} • ${item.accessCount} views`}
-        icon={<FontAwesome name={item.source === 'mesh' ? 'share-alt' : 'file-text-o'} />}
+        icon={<FontAwesome name={item.source === 'mesh' ? 'share-alt' : (isPrivate ? 'lock' : 'file-text-o')} color={isPrivate ? theme.accent : null} />}
         onPress={() => navigation.navigate('Viewer', { hash: item.hash })}
         rightElement={
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => deletePage(item.hash, item.title)}>
-            <FontAwesome name="trash" size={20} color={theme.error} />
-          </TouchableOpacity>
+          <View style={styles.rightRow}>
+            <TouchableOpacity style={styles.actionBtn} onPress={() => togglePrivacy(item)}>
+              <FontAwesome 
+                name={isPrivate ? 'lock' : 'globe'} 
+                size={18} 
+                color={isPrivate ? theme.accent : theme.success} 
+              />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => deletePage(item.hash, item.title)}>
+              <FontAwesome name="trash" size={20} color={theme.error} />
+            </TouchableOpacity>
+          </View>
         }
       />
     );
@@ -194,7 +211,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   list: { paddingBottom: 100, paddingTop: 4 },
-  deleteBtn: { padding: 4, marginLeft: 8 },
+  rightRow: { flexDirection: 'row', alignItems: 'center' },
+  actionBtn: { padding: 8, marginLeft: 4 },
+  deleteBtn: { padding: 8, marginLeft: 4 },
   emptyCard: {
     alignItems: 'center',
     justifyContent: 'center',

@@ -44,6 +44,7 @@ export default function MeshScreen() {
           hash: page.hash,
           title: page.title,
           url: page.url,
+          isPrivate: !!page.isPrivate,
         });
       });
     });
@@ -73,11 +74,15 @@ export default function MeshScreen() {
     const onRadioState = (nextState) => {
       setRadioState(nextState);
     };
+    const onPermissionPending = ({ hash }) => {
+      setDownloadingHashes((prev) => ({ ...prev, [hash]: 'pending' }));
+    };
 
     MeshManager.on('nearby-devices-update', onNearby);
     MeshManager.on('connected-peers-update', onConnected);
     MeshManager.on('catalog-update', onCatalog);
     MeshManager.on('page-received', onPageReceived);
+    MeshManager.on('permission-pending', onPermissionPending);
     MeshManager.on('error', onError);
     MeshManager.on('warning', onWarning);
     MeshManager.on('mesh-radio-state', onRadioState);
@@ -89,6 +94,7 @@ export default function MeshScreen() {
       MeshManager.off('connected-peers-update', onConnected);
       MeshManager.off('catalog-update', onCatalog);
       MeshManager.off('page-received', onPageReceived);
+      MeshManager.off('permission-pending', onPermissionPending);
       MeshManager.off('error', onError);
       MeshManager.off('warning', onWarning);
       MeshManager.off('mesh-radio-state', onRadioState);
@@ -134,20 +140,24 @@ export default function MeshScreen() {
   }
 
   function renderCatalogItem({ item }) {
-    const loading = !!downloadingHashes[item.hash];
+    const downloadState = downloadingHashes[item.hash];
+    const loading = downloadState === true;
+    const pending = downloadState === 'pending';
     const displayUrl = item.url.length > 35 ? item.url.substring(0, 32) + '...' : item.url;
+    
     return (
       <ListItem
         title={item.title}
         subtitle={`${displayUrl}\nPeer ${item.deviceId.slice(0, 8)}`}
-        icon={<FontAwesome name="file-text-o" />}
+        icon={<FontAwesome name={item.isPrivate ? "lock" : "file-text-o"} color={item.isPrivate ? theme.accent : null} />}
         rightElement={
           <Button
             variant="ghost"
-            title=""
-            icon={loading ? <ActivityIndicator size="small" color={theme.primary} /> : <FontAwesome name="download" size={20} color={theme.primary} />}
+            title={pending ? "Waiting..." : ""}
+            icon={loading ? <ActivityIndicator size="small" color={theme.primary} /> : (pending ? null : <FontAwesome name="download" size={20} color={theme.primary} />)}
             onPress={() => handleDownload(item)}
-            disabled={loading}
+            disabled={loading || pending}
+            textStyle={{ fontSize: 10, color: theme.textSecondary }}
           />
         }
       />

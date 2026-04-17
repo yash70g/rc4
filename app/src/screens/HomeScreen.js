@@ -6,6 +6,8 @@ import {
   ScrollView,
   RefreshControl,
   TouchableOpacity,
+  TextInput,
+  Alert,
 } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeContext';
@@ -17,6 +19,9 @@ import MeshManager from '../services/MeshManager';
 
 export default function HomeScreen({ navigation }) {
   const { theme, spacing, typography, isDark, toggleTheme } = useTheme();
+  const [deviceName, setDeviceName] = useState('Reality Cache Device');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [tempName, setTempName] = useState('');
   // ... rest of state and effects remain same
   const [stats, setStats] = useState({ count: 0, totalSize: 0 });
   const [meshStats, setMeshStats] = useState({ nearbyDevices: 0, connectedPeers: 0, peerPages: 0 });
@@ -41,6 +46,27 @@ export default function HomeScreen({ navigation }) {
   }, [loadData]);
 
   useEffect(() => {
+    const loadSettings = async () => {
+      const savedName = await CacheManager.getSetting('deviceName', 'Reality Cache Device');
+      setDeviceName(savedName);
+      setTempName(savedName);
+      BLEManager.setDeviceName(savedName);
+    };
+    loadSettings();
+  }, []);
+
+  const saveDeviceName = async () => {
+    const finalName = tempName.trim() || 'Reality Cache Device';
+    setDeviceName(finalName);
+    setTempName(finalName);
+    setIsEditingName(false);
+    await CacheManager.setSetting('deviceName', finalName);
+    BLEManager.setDeviceName(finalName);
+    // Restart mesh to broadcast new name
+    MeshManager.restartMesh();
+  };
+
+  useEffect(() => {
     const onStatsUpdate = () => setMeshStats(MeshManager.getNetworkStats());
     const onConnectionUpdate = () => setConnected(MeshManager.isConnected());
     const onPageReceived = () => loadData();
@@ -56,7 +82,7 @@ export default function HomeScreen({ navigation }) {
       MeshManager.off('catalog-update', onStatsUpdate);
       MeshManager.off('page-received', onPageReceived);
     };
-  }, []);
+  }, [loadData]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -87,6 +113,35 @@ export default function HomeScreen({ navigation }) {
           PEER-TO-PEER KNOWLEDGE MESH
         </Text>
       </View>
+
+      {/* Device Profile Section */}
+      <Card style={styles.profileCard}>
+        <View style={styles.profileHeader}>
+          <FontAwesome name="user-circle" size={24} color={theme.textSecondary} />
+          <View style={styles.profileInfo}>
+            <Text style={[styles.profileLabel, { color: theme.textSecondary }]}>YOUR MESH IDENTITY</Text>
+            {isEditingName ? (
+              <View style={styles.editRow}>
+                <TextInput
+                  style={[styles.nameInput, { color: theme.textPrimary, borderBottomColor: theme.primary }]}
+                  value={tempName}
+                  onChangeText={setTempName}
+                  autoFocus
+                  maxLength={20}
+                />
+                <TouchableOpacity onPress={saveDeviceName} style={styles.saveBtn}>
+                  <FontAwesome name="check-circle" size={24} color={theme.success} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={() => setIsEditingName(true)} style={styles.nameRow}>
+                <Text style={[styles.profileName, { color: theme.textPrimary }]}>{deviceName}</Text>
+                <FontAwesome name="edit" size={14} color={theme.primary} style={{ marginLeft: 8 }} />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Card>
 
       {/* Knowledge Radius - Clean & Typography Focused */}
       <View style={styles.radiusContainer}>
@@ -182,7 +237,7 @@ export default function HomeScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { alignItems: 'center', marginBottom: 40 },
+  header: { alignItems: 'center', marginBottom: 30 },
   headerTop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -195,6 +250,46 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  profileCard: {
+    padding: 16,
+    marginBottom: 24,
+  },
+  profileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  profileInfo: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  profileLabel: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  profileName: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  editRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nameInput: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    borderBottomWidth: 1,
+    paddingVertical: 2,
+  },
+  saveBtn: {
+    marginLeft: 12,
   },
   logo: { fontWeight: '800', letterSpacing: -0.5 },
   subtitle: { fontWeight: '700', marginTop: 4, letterSpacing: 1.5 },

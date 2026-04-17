@@ -48,7 +48,23 @@ export async function initCache() {
         lastAccessed INTEGER DEFAULT 0,
         accessCount INTEGER DEFAULT 1,
         source TEXT DEFAULT 'local',
-        createdAt INTEGER DEFAULT 0
+        createdAt INTEGER DEFAULT 0,
+        isPrivate INTEGER DEFAULT 0
+      )
+    `);
+
+    // Migration for existing tables: check if isPrivate exists by trying to add it
+    try {
+      await db.execAsync('ALTER TABLE pages ADD COLUMN isPrivate INTEGER DEFAULT 0');
+    } catch (e) {
+      // Column might already exist, ignore error
+    }
+
+    // Settings table for local device state (e.g. deviceName)
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
       )
     `);
     
@@ -62,6 +78,40 @@ export async function initCache() {
     initPromise = null; // Allow retry
     throw err;
   }
+}
+
+/**
+ * Update privacy status for a cached page
+ */
+export async function updatePrivacy(hash, isPrivate) {
+  const database = await getDb();
+  await database.runAsync(
+    'UPDATE pages SET isPrivate = ? WHERE hash = ?',
+    sanitize([isPrivate ? 1 : 0, hash])
+  );
+}
+
+/**
+ * Get a local setting
+ */
+export async function getSetting(key, defaultValue = null) {
+  const database = await getDb();
+  const res = await database.getFirstAsync(
+    'SELECT value FROM settings WHERE key = ?',
+    sanitize([key])
+  );
+  return res ? res.value : defaultValue;
+}
+
+/**
+ * Set a local setting
+ */
+export async function setSetting(key, value) {
+  const database = await getDb();
+  await database.runAsync(
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    sanitize([key, value])
+  );
 }
 
 /**
@@ -180,7 +230,7 @@ export async function getByHash(hash) {
 export async function listAll() {
   const database = await getDb();
   return await database.getAllAsync(
-    'SELECT id, hash, url, title, size, accessCount, source, createdAt FROM pages ORDER BY lastAccessed DESC'
+    'SELECT id, hash, url, title, size, accessCount, source, createdAt, isPrivate FROM pages ORDER BY lastAccessed DESC'
   );
 }
 
@@ -191,7 +241,7 @@ export async function search(query) {
   const database = await getDb();
   const q = `%${query || ''}%`;
   return await database.getAllAsync(
-    `SELECT id, hash, url, title, size, accessCount, source, createdAt 
+    `SELECT id, hash, url, title, size, accessCount, source, createdAt, isPrivate 
      FROM pages 
      WHERE title LIKE ? OR url LIKE ? 
      ORDER BY accessCount DESC`,
@@ -236,7 +286,7 @@ export async function getStats() {
 export async function getCatalog() {
   const database = await getDb();
   return await database.getAllAsync(
-    'SELECT hash, url, title, size, accessCount FROM pages ORDER BY accessCount DESC'
+    'SELECT hash, url, title, size, accessCount, isPrivate FROM pages ORDER BY accessCount DESC'
   );
 }
 

@@ -1,7 +1,7 @@
 import BLETransport from './BLETransport';
 
-// Logical chunk size - 300 is a safe speed/stability balance for modern Android
-const CHUNK_BYTES = 300;
+// Logical chunk size - 150 is the "sweet spot" for Android Bluetooth MTU stability
+const CHUNK_BYTES = 150;
 
 function makeMessageId() {
   return `msg-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
@@ -21,10 +21,19 @@ function base64Encode(str) {
 
 function base64Decode(str) {
   try {
-    // UTF-8 safe decoding for React Native/Hermes
-    return decodeURIComponent(escape(atob(str)));
+    // Sanitize: Remove all non-base64 characters and ensure proper padding
+    const sanitized = str.replace(/[^A-Za-z0-9+/=]/g, '');
+    
+    // Polyfill atob for robustness
+    if (typeof atob === 'function') {
+      return decodeURIComponent(escape(atob(sanitized)));
+    }
+    // Fallback if atob is missing
+    return Buffer.from(sanitized, 'base64').toString('utf-8');
   } catch (e) {
-    return atob(str);
+    console.warn('[PeerConnection] base64Decode error:', e.message);
+    // Last ditch: provide the raw string if possible
+    return str;
   }
 }
 

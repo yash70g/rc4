@@ -31,8 +31,8 @@ const SERVICE_UUID = 'CAFE0001-C0DE-FACE-B00C-CAFE01234567';
 const RX_CHAR_UUID = 'CAFE0002-C0DE-FACE-B00C-CAFE01234567';
 const TX_CHAR_UUID = 'CAFE0003-C0DE-FACE-B00C-CAFE01234567';
 
-// BLE chunk size — 400 allows room for our 300-byte logical payload + JSON/Base64 overhead
-const BLE_CHUNK_SIZE = 400;
+// BLE chunk size — 150 matches the multiplexer to ensure single-packet atomic delivery
+const BLE_CHUNK_SIZE = 150;
 
 // Delimiter for BLE-level chunk framing
 const CHUNK_START = '---RC-START---';
@@ -243,9 +243,9 @@ class BLETransport {
     for (const chunk of chunks) {
       const encoded = this._base64encode(chunk);
       await rxChar.writeWithoutResponse(encoded);
-      // Small delay between chunks to avoid flooding
+      // Larger delay between chunks to give Android BLE stack time to process
       if (chunks.length > 1) {
-        await this._delay(40);
+        await this._delay(60);
       }
     }
   }
@@ -259,7 +259,7 @@ class BLETransport {
     for (const chunk of chunks) {
       await ExoBlePeripheral.sendNotification(centralId, chunk);
       if (chunks.length > 1) {
-        await this._delay(40);
+        await this._delay(60);
       }
     }
   }

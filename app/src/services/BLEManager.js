@@ -74,6 +74,13 @@ class BLEManager {
     return { ...this.localMetadata };
   }
 
+  setDeviceName(name) {
+    this.localMetadata.deviceName = name || 'Reality Cache Device';
+    if (this.advertising) {
+      this.updateAdvertisingMetadata();
+    }
+  }
+
   isScanning() {
     return this.scanning;
   }
@@ -101,17 +108,24 @@ class BLEManager {
     if (ExoBlePeripheral) {
       try {
         // Compact encoding: RC-shortId-pageCountp
-        // This fits in 31-byte BLE advertisement limit where JSON won't.
-        const shortId = this.localMetadata.deviceId.slice(-6);
-        const compactName = `RC-${shortId}-${this.localMetadata.pageCount}p`;
-        
+        // But if we have a custom name, use it if it fits (limit ~18 chars)
+        const customName = this.localMetadata.deviceName;
+        const shortId = this.localMetadata.deviceId.slice(-4);
+        let displayName = `RC-${shortId}-${this.localMetadata.pageCount}p`;
+
+        if (customName && customName !== 'Reality Cache Device') {
+            // Trim to fit advertisement constraints
+            const cleanName = customName.replace(/[^a-zA-Z0-9 ]/g, '').trim().substring(0, 16);
+            if (cleanName) displayName = cleanName;
+        }
+
         await ExoBlePeripheral.startPeripheral({
           serviceUuid: SERVICE_UUID,
-          deviceName: compactName,
-          metadata: JSON.stringify(this.localMetadata), // Still put full JSON in GATT record for reading once connected
+          deviceName: displayName,
+          metadata: JSON.stringify(this.localMetadata), // Still put full JSON in GATT record
         });
         this.advertising = true;
-        console.log(`[BLEManager] Native peripheral started: ${compactName}`);
+        console.log(`[BLEManager] Native peripheral started: ${displayName}`);
       } catch (e) {
         console.warn('[BLEManager] Native peripheral failed:', e.message);
         this.advertising = false;
@@ -153,14 +167,20 @@ class BLEManager {
 
     if (ExoBlePeripheral && this.advertising) {
       try {
-        const shortId = this.localMetadata.deviceId.slice(-6);
-        const compactName = `RC-${shortId}-${this.localMetadata.pageCount}p`;
+        const customName = this.localMetadata.deviceName;
+        const shortId = this.localMetadata.deviceId.slice(-4);
+        let displayName = `RC-${shortId}-${this.localMetadata.pageCount}p`;
+
+        if (customName && customName !== 'Reality Cache Device') {
+            const cleanName = customName.replace(/[^a-zA-Z0-9 ]/g, '').trim().substring(0, 16);
+            if (cleanName) displayName = cleanName;
+        }
         
         // Restart advertising with new name
         await ExoBlePeripheral.stopPeripheral();
         await ExoBlePeripheral.startPeripheral({
           serviceUuid: SERVICE_UUID,
-          deviceName: compactName,
+          deviceName: displayName,
           metadata: JSON.stringify(this.localMetadata),
         });
       } catch (e) {

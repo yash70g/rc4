@@ -12,6 +12,7 @@ class MeshManager {
     this.connectedPeers = new Map();
     this.peerCatalogs = new Map();
     this.bleIdMap = new Map(); // bleDeviceId → deviceId
+    this.pendingRequests = new Map(); // hash → Set(deviceId)
     this.started = false;
 
     BLEManager.on('deviceFound', this.handleDeviceFound.bind(this));
@@ -181,10 +182,28 @@ class MeshManager {
   async handleMessage({ deviceId, data }) {
     if (!data || typeof data !== 'object') return;
 
+    // Resolve logical ID from the message source
+    const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
+
     switch (data.type) {
       case 'CATALOG':
-        this.peerCatalogs.set(deviceId, Array.isArray(data.pages) ? data.pages : []);
-        this.emit('catalog-update', { deviceId, pages: this.getPeerCatalog(deviceId) });
+        // Identity Handshake: if the peer sent their name, update our records
+        if (data.deviceName) {
+            const currentPeer = this.connectedPeers.get(resolvedId);
+            if (currentPeer) {
+                this.connectedPeers.set(resolvedId, { ...currentPeer, deviceName: data.deviceName });
+                this.emit('connected-peers-update', this.getConnectedPeers());
+            }
+            
+            const nearby = this.nearbyDevices.get(resolvedId);
+            if (nearby) {
+                this.nearbyDevices.set(resolvedId, { ...nearby, deviceName: data.deviceName });
+                this.emit('nearby-devices-update', this.getNearbyDevices());
+            }
+        }
+
+        this.peerCatalogs.set(resolvedId, Array.isArray(data.pages) ? data.pages : []);
+        this.emit('catalog-update', { deviceId: resolvedId, pages: this.getPeerCatalog(resolvedId) });
         this.emit('mesh-state', this.getNetworkStats());
         break;
 
@@ -206,6 +225,17 @@ class MeshManager {
 
       case 'REQUEST_PAGE':
         await this.sendPage(deviceId, data.hash);
+        break;
+
+      case 'PERMISSION_PENDING':
+        this.emit('permission-pending', { deviceId, hash: data.hash });
+        break;
+
+      case 'PERMISSION_DENIED':
+        this.emit('error', {
+          deviceId,
+          message: `Peer denied permission to download: ${data.title || 'Private content'}`,
+        });
         break;
 
       case 'PAGE_NOT_FOUND':
@@ -253,8 +283,14 @@ class MeshManager {
 
   async sendCatalog(deviceId) {
     const catalog = await CacheManager.getCatalog();
-    const pages = catalog.map(({ hash, title, url }) => ({ hash, title, url }));
-    return PeerConnectionManager.sendMessage(deviceId, { type: 'CATALOG', pages });
+    const pages = catalog.map(({ hash, title, url, isPrivate }) => ({ hash, title, url, isPrivate }));
+    const myName = await CacheManager.getSetting('deviceName', 'Reality Cache Device');
+    
+    return PeerConnectionManager.sendMessage(deviceId, { 
+        type: 'CATALOG', 
+        pages,
+        deviceName: myName 
+    });
   }
 
   async shareCatalog() {
@@ -262,13 +298,37 @@ class MeshManager {
     await Promise.all(peers.map((deviceId) => this.sendCatalog(deviceId)));
   }
 
-  async sendPage(deviceId, hash) {
+  async sendPage(deviceId, hash, approved = false) {
     if (!hash) return;
 
     const page = await CacheManager.getByHash(hash);
     if (!page) {
       PeerConnectionManager.sendMessage(deviceId, {
         type: 'PAGE_NOT_FOUND',
+        hash,
+      });
+      return;
+    }
+
+    // Check privacy
+    if (page.isPrivate && !approved) {
+      // Add to pending
+      if (!this.pendingRequests.has(hash)) {
+        this.pendingRequests.set(hash, new Set());
+      }
+      this.pendingRequests.get(hash).add(deviceId);
+
+      // Notify owner locally
+      this.emit('permission-requested', {
+        deviceId,
+        hash,
+        title: page.title,
+        peerName: this.connectedPeers.get(deviceId)?.deviceName || 'Unknown Peer',
+      });
+
+      // Notify requester
+      PeerConnectionManager.sendMessage(deviceId, {
+        type: 'PERMISSION_PENDING',
         hash,
       });
       return;
@@ -281,6 +341,24 @@ class MeshManager {
       title: page.title,
       url: page.url,
       assets: [],
+    });
+  }
+
+  async approveRequest(deviceId, hash) {
+    const set = this.pendingRequests.get(hash);
+    if (set) set.delete(deviceId);
+    await this.sendPage(deviceId, hash, true);
+  }
+
+  async denyRequest(deviceId, hash) {
+    const set = this.pendingRequests.get(hash);
+    if (set) set.delete(deviceId);
+    
+    const page = await CacheManager.getByHash(hash);
+    PeerConnectionManager.sendMessage(deviceId, {
+      type: 'PERMISSION_DENIED',
+      hash,
+      title: page?.title,
     });
   }
 
