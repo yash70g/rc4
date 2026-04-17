@@ -9,7 +9,9 @@ import {
   Alert,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
+import Button from '../components/Button';
 import { processHtml } from '../services/PageProcessor';
 import * as CacheManager from '../services/CacheManager';
 import MeshManager from '../services/MeshManager';
@@ -19,12 +21,12 @@ const SEARCH_ENGINE = 'https://www.google.com/search?q=';
 function isUrl(text) {
   const t = text.trim();
   if (/^https?:\/\//i.test(t)) return true;
-  // Looks like a domain: has a dot, no spaces
   if (!t.includes(' ') && /^[a-zA-Z0-9\-]+\.[a-zA-Z]{2,}/.test(t)) return true;
   return false;
 }
 
 export default function BrowserScreen({ navigation }) {
+  const { theme, spacing, typography, isDark } = useTheme();
   const [input, setInput] = useState('');
   const [currentUrl, setCurrentUrl] = useState('https://www.google.com');
   const [loading, setLoading] = useState(false);
@@ -48,7 +50,7 @@ export default function BrowserScreen({ navigation }) {
         }
       }
     } catch (e) {
-      // Not our message, ignore
+      // Ignore
     }
   };
 
@@ -67,17 +69,21 @@ export default function BrowserScreen({ navigation }) {
 
   const cachePage = async () => {
     setCaching(true);
+    console.log('[Browser] Starting cache capture...');
     try {
-      // Inject JS to capture the rendered DOM directly from the WebView
       const capturedHtml = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Timed out capturing page')), 10000);
+        const timeout = setTimeout(() => reject(new Error('Timed out capturing page content')), 15000);
+        
+        console.log('[Browser] Injecting capture script...');
         webViewRef.current?.injectJavaScript(`
           (function() {
             try {
+              const html = document.documentElement.outerHTML;
+              const title = document.title || 'Untitled Page';
               window.ReactNativeWebView.postMessage(JSON.stringify({
                 type: 'cache-capture',
-                html: document.documentElement.outerHTML,
-                title: document.title
+                html: html,
+                title: title
               }));
             } catch(e) {
               window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -88,53 +94,67 @@ export default function BrowserScreen({ navigation }) {
           })();
           true;
         `);
-        // Store resolve/reject so onMessage can call them
-        captureResolve.current = (data) => { clearTimeout(timeout); resolve(data); };
-        captureReject.current = (err) => { clearTimeout(timeout); reject(err); };
+        
+        captureResolve.current = (data) => { 
+          clearTimeout(timeout); 
+          resolve(data); 
+        };
+        captureReject.current = (err) => { 
+          clearTimeout(timeout); 
+          reject(err); 
+        };
       });
 
-      const { html, title } = await processHtml(currentUrl, capturedHtml);
-      const result = await CacheManager.storeSnapshot(currentUrl, title, html);
+      if (!capturedHtml || typeof capturedHtml !== 'string') {
+        throw new Error('Invalid HTML content captured');
+      }
 
-      // Share updated catalog with mesh
+      console.log('[Browser] Processing HTML snapshot...');
+      const { html, title } = await processHtml(currentUrl, capturedHtml);
+      
+      console.log('[Browser] Storing to database:', { url: currentUrl, title });
+      const result = await CacheManager.storeSnapshot(currentUrl, title, html);
+      
+      console.log('[Browser] Syncing mesh catalog...');
       await MeshManager.shareCatalog();
 
       if (result.deduplicated) {
-        Alert.alert('Already Cached', `"${title}" is already in your cache.`);
+        Alert.alert('Knowledge Exists', `"${title}" is already in your local radius.`);
       } else {
         Alert.alert(
-          '✅ Page Cached!',
-          `"${title}" saved (${CacheManager.formatSize(result.size)}).`,
+          '✅ Page Cached',
+          `"${title}" is now physically stored on this device.`,
           [
-            { text: 'View Cache', onPress: () => navigation.navigate('Cache') },
-            { text: 'OK' },
+            { text: 'Open Library', onPress: () => navigation.navigate('Cache') },
+            { text: 'Done' },
           ]
         );
       }
     } catch (error) {
-      Alert.alert('Cache Failed', error.message);
+      console.error('[Browser] Cache failed:', error);
+      Alert.alert('Cache Interrupted', error.message);
     } finally {
       setCaching(false);
     }
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* ── URL / Search Bar ───────────────────────────────── */}
-      <View style={styles.urlBar}>
-        <View style={styles.urlInputContainer}>
-          <Ionicons
-            name={loading ? 'hourglass-outline' : 'search-outline'}
+      <View style={[styles.urlBar, { backgroundColor: theme.card, borderBottomColor: theme.border }]}>
+        <View style={[styles.urlInputContainer, { backgroundColor: isDark ? '#0F1115' : '#F3F4F6' }]}>
+          <FontAwesome
+            name={loading ? 'hourglass-half' : 'search'}
             size={18}
-            color="#6c63ff"
+            color={theme.primary}
           />
           <TextInput
-            style={styles.urlInput}
+            style={[styles.urlInput, { color: theme.textPrimary }]}
             value={input}
             onChangeText={setInput}
             onSubmitEditing={handleSubmit}
             placeholder="Search or enter URL..."
-            placeholderTextColor="#555"
+            placeholderTextColor={theme.textSecondary}
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="web-search"
@@ -143,26 +163,26 @@ export default function BrowserScreen({ navigation }) {
           />
           {input.length > 0 && (
             <TouchableOpacity onPress={() => setInput('')} style={styles.clearBtn}>
-              <Ionicons name="close-circle" size={18} color="#555" />
+              <FontAwesome name="times-circle" size={18} color={theme.textSecondary} />
             </TouchableOpacity>
           )}
           <TouchableOpacity onPress={handleSubmit} style={styles.goBtn}>
-            <Ionicons name="arrow-forward-circle" size={28} color="#6c63ff" />
+            <FontAwesome name="arrow-circle-right" size={30} color={theme.primary} />
           </TouchableOpacity>
         </View>
       </View>
 
       {/* ── Browser Nav Bar ────────────────────────────────── */}
-      <View style={styles.navBar}>
+      <View style={[styles.navBar, { backgroundColor: theme.card, borderBottomColor: theme.border }]}>
         <TouchableOpacity
           onPress={() => webViewRef.current?.goBack()}
           disabled={!canGoBack}
           style={styles.navBtn}
         >
-          <Ionicons
-            name="chevron-back"
-            size={22}
-            color={canGoBack ? '#fff' : '#333'}
+          <FontAwesome
+            name="chevron-left"
+            size={20}
+            color={canGoBack ? theme.textPrimary : theme.border}
           />
         </TouchableOpacity>
         <TouchableOpacity
@@ -170,47 +190,40 @@ export default function BrowserScreen({ navigation }) {
           disabled={!canGoForward}
           style={styles.navBtn}
         >
-          <Ionicons
-            name="chevron-forward"
-            size={22}
-            color={canGoForward ? '#fff' : '#333'}
+          <FontAwesome
+            name="chevron-right"
+            size={20}
+            color={canGoForward ? theme.textPrimary : theme.border}
           />
         </TouchableOpacity>
         <TouchableOpacity
           onPress={() => webViewRef.current?.reload()}
           style={styles.navBtn}
         >
-          <Ionicons name="refresh-outline" size={20} color="#888" />
+          <FontAwesome name="refresh" size={18} color={theme.textSecondary} />
         </TouchableOpacity>
 
-        {/* Page title (center) */}
         <View style={styles.navTitleWrap}>
-          <Text style={styles.navTitle} numberOfLines={1}>
+          <Text style={[styles.navTitle, { color: theme.textSecondary }]} numberOfLines={1}>
             {pageTitle || 'New Tab'}
           </Text>
         </View>
 
-        {/* Cache button */}
-        <TouchableOpacity
-          style={[styles.cacheBtn, caching && styles.cacheBtnDisabled]}
+        <Button
+          variant="primary"
+          title="Cache"
+          loading={caching}
           onPress={cachePage}
-          disabled={caching}
-        >
-          {caching ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <>
-              <Ionicons name="download-outline" size={16} color="#fff" />
-              <Text style={styles.cacheBtnText}>Cache</Text>
-            </>
-          )}
-        </TouchableOpacity>
+          style={styles.cacheBtn}
+          textStyle={{ fontSize: 13 }}
+          icon={<FontAwesome name="download" size={16} color="#fff" />}
+        />
       </View>
 
       {/* ── Progress Bar ───────────────────────────────────── */}
       {loading && (
-        <View style={styles.progressBar}>
-          <View style={[styles.progressFill, { width: `${Math.max(progress * 100, 10)}%` }]} />
+        <View style={[styles.progressBar, { backgroundColor: theme.border }]}>
+          <View style={[styles.progressFill, { backgroundColor: theme.primary, width: `${Math.max(progress * 100, 10)}%` }]} />
         </View>
       )}
 
@@ -219,7 +232,7 @@ export default function BrowserScreen({ navigation }) {
         <WebView
           ref={webViewRef}
           source={{ uri: currentUrl }}
-          style={styles.webview}
+          style={[styles.webview, { backgroundColor: theme.background }]}
           onLoadStart={() => setLoading(true)}
           onLoadEnd={() => setLoading(false)}
           onLoadProgress={({ nativeEvent }) => setProgress(nativeEvent.progress)}
@@ -235,9 +248,9 @@ export default function BrowserScreen({ navigation }) {
           onMessage={handleWebViewMessage}
           startInLoadingState={true}
           renderLoading={() => (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#6c63ff" />
-              <Text style={styles.loadingText}>Loading...</Text>
+            <View style={[styles.loadingOverlay, { backgroundColor: theme.background }]}>
+              <ActivityIndicator size="large" color={theme.primary} />
+              <Text style={[styles.loadingText, { color: theme.textSecondary }]}>Loading Knowledge...</Text>
             </View>
           )}
         />
@@ -247,87 +260,65 @@ export default function BrowserScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0d0d1a' },
-
-  // URL bar
+  container: { flex: 1 },
   urlBar: {
-    paddingTop: 50,
-    paddingHorizontal: 12,
-    paddingBottom: 8,
-    backgroundColor: '#1a1a2e',
+    paddingTop: 60,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
   },
   urlInputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0d0d1a',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    gap: 8,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    height: 48,
   },
   urlInput: {
     flex: 1,
-    color: '#fff',
-    fontSize: 14,
-    paddingVertical: 10,
+    fontSize: 15,
+    marginLeft: 10,
   },
-  clearBtn: { padding: 2 },
-  goBtn: { padding: 2 },
-
-  // Nav bar
+  clearBtn: { padding: 4 },
+  goBtn: { marginLeft: 8 },
   navBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    paddingHorizontal: 8,
-    paddingBottom: 6,
-    gap: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#ffffff10',
   },
   navBtn: {
-    padding: 6,
-    borderRadius: 8,
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   navTitleWrap: {
     flex: 1,
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
   },
   navTitle: {
-    color: '#666',
-    fontSize: 11,
-    fontWeight: '500',
+    fontSize: 12,
+    fontWeight: '600',
   },
   cacheBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#6c63ff',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    gap: 4,
+    height: 36,
+    paddingHorizontal: 16,
+    borderRadius: 18,
   },
-  cacheBtnDisabled: { backgroundColor: '#444' },
-  cacheBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-
-  // Progress
   progressBar: {
-    height: 3,
-    backgroundColor: '#ffffff10',
+    height: 2,
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#6c63ff',
-    borderRadius: 2,
   },
-
-  // WebView
   webviewContainer: { flex: 1 },
   webview: { flex: 1 },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#0d0d1a',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  loadingText: { color: '#888', marginTop: 12, fontSize: 14 },
+  loadingText: { marginTop: 16, fontSize: 14, fontWeight: '500' },
 });

@@ -4,69 +4,98 @@ import { hashContent } from './ContentHasher';
 
 const CACHE_DIR = `${FileSystem.documentDirectory}rc-cache/`;
 const MAX_CACHE_SIZE = 100 * 1024 * 1024; // 100MB
+
 let db = null;
+let initPromise = null;
+
+/**
+ * Sanitizes parameters for SQLite to ensure no 'undefined' values are passed,
+ * which causes NullPointerException in NativeDatabase.prepareAsync on Android.
+ */
+function sanitize(params) {
+  return params.map(p => {
+    if (p === undefined || p === null) return '';
+    if (typeof p === 'number' || typeof p === 'string') return p;
+    return String(p);
+  });
+}
 
 /**
  * Initialize the cache: create directory and SQLite tables
  */
 export async function initCache() {
-  // Ensure cache directory exists
-  const dirInfo = await FileSystem.getInfoAsync(CACHE_DIR);
-  if (!dirInfo.exists) {
-    await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
+  console.log('[Cache] Initializing...');
+  try {
+    // Ensure cache directory exists
+    const dirInfo = await FileSystem.getInfoAsync(CACHE_DIR);
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(CACHE_DIR, { intermediates: true });
+    }
+
+    // Open SQLite database
+    db = await SQLite.openDatabaseAsync('realitycache.db');
+    
+    // Initialize schema
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS pages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hash TEXT UNIQUE NOT NULL,
+        url TEXT NOT NULL,
+        title TEXT DEFAULT 'Untitled',
+        mimeType TEXT DEFAULT 'text/html',
+        size INTEGER DEFAULT 0,
+        localPath TEXT NOT NULL,
+        lastAccessed INTEGER DEFAULT 0,
+        accessCount INTEGER DEFAULT 1,
+        source TEXT DEFAULT 'local',
+        createdAt INTEGER DEFAULT 0
+      )
+    `);
+    
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON pages(hash)');
+    await db.execAsync('CREATE INDEX IF NOT EXISTS idx_url ON pages(url)');
+
+    console.log('[Cache] Ready.');
+    return db;
+  } catch (err) {
+    console.error('[Cache] Init failed:', err);
+    initPromise = null; // Allow retry
+    throw err;
   }
-
-  // Open SQLite database
-  db = await SQLite.openDatabaseAsync('realitycache.db');
-  
-  // Initialize schema
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS pages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      hash TEXT UNIQUE NOT NULL,
-      url TEXT NOT NULL,
-      title TEXT DEFAULT 'Untitled',
-      mimeType TEXT DEFAULT 'text/html',
-      size INTEGER DEFAULT 0,
-      localPath TEXT NOT NULL,
-      lastAccessed INTEGER DEFAULT 0,
-      accessCount INTEGER DEFAULT 1,
-      source TEXT DEFAULT 'local',
-      createdAt INTEGER DEFAULT 0
-    )
-  `);
-  
-  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_hash ON pages(hash)');
-  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_url ON pages(url)');
-
-  return db;
 }
 
 /**
- * Get the database (initialize if needed)
+ * Get the database (initialize if needed, with singleton guard)
  */
 async function getDb() {
-  if (!db) await initCache();
-  return db;
+  if (db) return db;
+  if (!initPromise) {
+    initPromise = initCache();
+  }
+  return initPromise;
 }
 
 /**
  * Store processed HTML snapshot
  */
 export async function storeSnapshot(url, title, html) {
+  console.log('[Cache] Storing snapshot for:', url);
   const database = await getDb();
   const hash = await hashContent(html);
+  
+  const safeTitle = title || 'Untitled';
+  const safeUrl = url || 'about:blank';
 
   // Check for duplicate
   const existing = await database.getFirstAsync(
     'SELECT * FROM pages WHERE hash = ?',
-    [hash]
+    sanitize([hash])
   );
+
   if (existing) {
-    // Update access count
     await database.runAsync(
       'UPDATE pages SET accessCount = accessCount + 1, lastAccessed = ? WHERE hash = ?',
-      [Date.now(), hash]
+      sanitize([Date.now(), hash])
     );
     return { ...existing, deduplicated: true };
   }
@@ -83,13 +112,11 @@ export async function storeSnapshot(url, title, html) {
   await database.runAsync(
     `INSERT INTO pages (hash, url, title, mimeType, size, localPath, lastAccessed, accessCount, source, createdAt) 
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [hash, url, title, 'text/html', size, filePath, Date.now(), 1, 'local', Date.now()]
+    sanitize([hash, safeUrl, safeTitle, 'text/html', size, filePath, Date.now(), 1, 'local', Date.now()])
   );
 
-  // Evict if over limit
   await evictLRU();
-
-  return { hash, url, title, size, localPath: filePath, deduplicated: false };
+  return { hash, url: safeUrl, title: safeTitle, size, localPath: filePath, deduplicated: false };
 }
 
 /**
@@ -97,14 +124,15 @@ export async function storeSnapshot(url, title, html) {
  */
 export async function storeMeshContent(hash, url, title, html) {
   const database = await getDb();
+  
+  const safeTitle = title || 'Untitled';
+  const safeUrl = url || 'about:blank';
 
   const existing = await database.getFirstAsync(
     'SELECT * FROM pages WHERE hash = ?',
-    [hash]
+    sanitize([hash])
   );
-  if (existing) {
-    return { ...existing, deduplicated: true };
-  }
+  if (existing) return { ...existing, deduplicated: true };
 
   const filePath = `${CACHE_DIR}${hash}.html`;
   await FileSystem.writeAsStringAsync(filePath, html, {
@@ -116,12 +144,11 @@ export async function storeMeshContent(hash, url, title, html) {
   await database.runAsync(
     `INSERT INTO pages (hash, url, title, mimeType, size, localPath, lastAccessed, accessCount, source, createdAt) 
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [hash, url, title, 'text/html', size, filePath, Date.now(), 1, 'mesh', Date.now()]
+    sanitize([hash, safeUrl, safeTitle, 'text/html', size, filePath, Date.now(), 1, 'mesh', Date.now()])
   );
 
   await evictLRU();
-
-  return { hash, url, title, size, localPath: filePath, deduplicated: false };
+  return { hash, url: safeUrl, title: safeTitle, size, localPath: filePath, deduplicated: false };
 }
 
 /**
@@ -131,17 +158,15 @@ export async function getByHash(hash) {
   const database = await getDb();
   const row = await database.getFirstAsync(
     'SELECT * FROM pages WHERE hash = ?',
-    [hash]
+    sanitize([hash])
   );
   if (!row) return null;
 
-  // Update access
   await database.runAsync(
     'UPDATE pages SET accessCount = accessCount + 1, lastAccessed = ? WHERE hash = ?',
-    [Date.now(), hash]
+    sanitize([Date.now(), hash])
   );
 
-  // Read file content
   const html = await FileSystem.readAsStringAsync(row.localPath, {
     encoding: FileSystem.EncodingType.UTF8,
   });
@@ -154,10 +179,9 @@ export async function getByHash(hash) {
  */
 export async function listAll() {
   const database = await getDb();
-  const rows = await database.getAllAsync(
+  return await database.getAllAsync(
     'SELECT id, hash, url, title, size, accessCount, source, createdAt FROM pages ORDER BY lastAccessed DESC'
   );
-  return rows;
 }
 
 /**
@@ -165,14 +189,14 @@ export async function listAll() {
  */
 export async function search(query) {
   const database = await getDb();
-  const rows = await database.getAllAsync(
+  const q = `%${query || ''}%`;
+  return await database.getAllAsync(
     `SELECT id, hash, url, title, size, accessCount, source, createdAt 
      FROM pages 
      WHERE title LIKE ? OR url LIKE ? 
      ORDER BY accessCount DESC`,
-    [`%${query}%`, `%${query}%`]
+    sanitize([q, q])
   );
-  return rows;
 }
 
 /**
@@ -182,15 +206,13 @@ export async function deletePage(hash) {
   const database = await getDb();
   const row = await database.getFirstAsync(
     'SELECT localPath FROM pages WHERE hash = ?',
-    [hash]
+    sanitize([hash])
   );
   if (row) {
     try {
       await FileSystem.deleteAsync(row.localPath, { idempotent: true });
-    } catch (e) {
-      // File might already be gone
-    }
-    await database.runAsync('DELETE FROM pages WHERE hash = ?', [hash]);
+    } catch (e) {}
+    await database.runAsync('DELETE FROM pages WHERE hash = ?', sanitize([hash]));
   }
 }
 
@@ -209,41 +231,38 @@ export async function getStats() {
 }
 
 /**
- * Get the content catalog for mesh sharing (lightweight metadata only)
+ * Get the content catalog for mesh sharing
  */
 export async function getCatalog() {
   const database = await getDb();
-  const rows = await database.getAllAsync(
+  return await database.getAllAsync(
     'SELECT hash, url, title, size, accessCount FROM pages ORDER BY accessCount DESC'
   );
-  return rows;
 }
 
 /**
- * Read raw HTML for a given hash (for mesh transfer)
+ * Read raw HTML for a given hash
  */
 export async function readHtml(hash) {
   const database = await getDb();
   const row = await database.getFirstAsync(
     'SELECT localPath FROM pages WHERE hash = ?',
-    [hash]
+    sanitize([hash])
   );
   if (!row) return null;
-  const html = await FileSystem.readAsStringAsync(row.localPath, {
+  return await FileSystem.readAsStringAsync(row.localPath, {
     encoding: FileSystem.EncodingType.UTF8,
   });
-  return html;
 }
 
 /**
- * LRU eviction — remove least-recently-accessed pages if over limit
+ * LRU eviction
  */
 async function evictLRU() {
   const database = await getDb();
   const stats = await getStats();
   if (stats.totalSize <= MAX_CACHE_SIZE) return;
 
-  // Get oldest pages first
   const rows = await database.getAllAsync(
     'SELECT hash, localPath, size FROM pages ORDER BY lastAccessed ASC'
   );
@@ -256,7 +275,7 @@ async function evictLRU() {
     try {
       await FileSystem.deleteAsync(row.localPath, { idempotent: true });
     } catch (e) {}
-    await database.runAsync('DELETE FROM pages WHERE hash = ?', [row.hash]);
+    await database.runAsync('DELETE FROM pages WHERE hash = ?', sanitize([row.hash]));
     freed += row.size;
   }
 }

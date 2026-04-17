@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, TouchableOpacity, Text, StyleSheet } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
 
 import HomeScreen from '../screens/HomeScreen';
 import BrowserScreen from '../screens/BrowserScreen';
@@ -11,15 +12,14 @@ import MeshMapScreen from '../screens/MeshMapScreen';
 import ViewerScreen from '../screens/ViewerScreen';
 
 const TABS = [
-  { key: 'Home', icon: 'home', iconOutline: 'home-outline', component: HomeScreen },
-  { key: 'Browser', icon: 'globe', iconOutline: 'globe-outline', component: BrowserScreen },
-  { key: 'Cache', icon: 'archive', iconOutline: 'archive-outline', component: CacheScreen },
-  { key: 'Search', icon: 'search', iconOutline: 'search-outline', component: SearchScreen },
-  { key: 'Mesh', icon: 'git-network', iconOutline: 'git-network-outline', component: MeshScreen },
-  { key: 'Map', icon: 'map', iconOutline: 'map-outline', component: MeshMapScreen },
+  { key: 'Home', icon: 'home', component: HomeScreen },
+  { key: 'Browser', icon: 'globe', component: BrowserScreen },
+  { key: 'Cache', icon: 'briefcase', component: CacheScreen },
+  { key: 'Search', icon: 'search', component: SearchScreen },
+  { key: 'Mesh', icon: 'share-alt', component: MeshScreen },
+  { key: 'Map', icon: 'map', component: MeshMapScreen },
 ];
 
-// Simple custom navigation context — no react-navigation needed
 const NavigationContext = React.createContext();
 
 export function useNavigation() {
@@ -27,6 +27,7 @@ export function useNavigation() {
 }
 
 export default function AppNavigator() {
+  const { theme, isDark } = useTheme();
   const [activeTab, setActiveTab] = useState('Home');
   const [viewerHash, setViewerHash] = useState(null);
 
@@ -44,7 +45,6 @@ export default function AppNavigator() {
     },
   };
 
-  // If viewing a cached page, show ViewerScreen fullscreen
   if (viewerHash) {
     return (
       <NavigationContext.Provider value={navigation}>
@@ -57,9 +57,9 @@ export default function AppNavigator() {
 
   return (
     <NavigationContext.Provider value={navigation}>
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
         <ActiveScreen navigation={navigation} />
-        <View style={styles.tabBar}>
+        <View style={[styles.tabBar, { backgroundColor: theme.card, borderTopColor: theme.border }]}>
           {TABS.map((tab) => {
             const active = activeTab === tab.key;
             return (
@@ -72,12 +72,16 @@ export default function AppNavigator() {
                 }}
                 activeOpacity={0.7}
               >
-                <Ionicons
-                  name={active ? tab.icon : tab.iconOutline}
-                  size={22}
-                  color={active ? '#6c63ff' : '#666'}
+                <FontAwesome
+                  name={tab.icon}
+                  size={20}
+                  color={active ? theme.primary : theme.textSecondary}
                 />
-                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                <Text style={[
+                  styles.tabLabel, 
+                  { color: active ? theme.primary : theme.textSecondary },
+                  active && styles.tabLabelActive
+                ]}>
                   {tab.key}
                 </Text>
               </TouchableOpacity>
@@ -90,15 +94,13 @@ export default function AppNavigator() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0d0d1a' },
+  container: { flex: 1 },
   tabBar: {
     flexDirection: 'row',
-    backgroundColor: '#1a1a2e',
     borderTopWidth: 1,
-    borderTopColor: '#ffffff10',
-    height: 60,
-    paddingBottom: 8,
-    paddingTop: 4,
+    height: 85,
+    paddingBottom: 28,
+    paddingTop: 12,
   },
   tab: {
     flex: 1,
@@ -107,11 +109,10 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     fontSize: 10,
-    fontWeight: '600',
-    color: '#666',
-    marginTop: 2,
+    fontWeight: '700',
+    marginTop: 4,
   },
   tabLabelActive: {
-    color: '#6c63ff',
+    // any additional active styling
   },
 });

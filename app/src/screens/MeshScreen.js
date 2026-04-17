@@ -4,14 +4,18 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  TouchableOpacity,
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
+import Card from '../components/Card';
+import Button from '../components/Button';
+import ListItem from '../components/ListItem';
 import MeshManager from '../services/MeshManager';
 
 export default function MeshScreen() {
+  const { theme, spacing, typography, isDark } = useTheme();
   const [nearbyDevices, setNearbyDevices] = useState([]);
   const [connectedPeers, setConnectedPeers] = useState([]);
   const [catalogRows, setCatalogRows] = useState([]);
@@ -112,105 +116,103 @@ export default function MeshScreen() {
   function renderDevice({ item }) {
     const isConnected = connectedDeviceSet.has(item.deviceId);
     return (
-      <View style={styles.deviceCard}>
-        <Ionicons name="phone-portrait-outline" size={30} color="#fff" />
-        <View style={styles.deviceInfo}>
-          <Text style={styles.deviceName}>{item.deviceName}</Text>
-          <Text style={styles.deviceMeta}>{item.pageCount || 0} pages shared</Text>
-        </View>
-
-        {isConnected ? (
-          <TouchableOpacity style={[styles.actionBtn, styles.secondaryBtn]} onPress={() => MeshManager.requestCatalog(item.deviceId)}>
-            <Text style={styles.actionText}>View Catalog</Text>
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity style={styles.actionBtn} onPress={() => handleConnect(item.deviceId)}>
-            <Text style={styles.actionText}>Connect</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      <ListItem
+        title={item.deviceName}
+        subtitle={`${item.pageCount || 0} pages shared`}
+        icon={<FontAwesome name="mobile" />}
+        rightElement={
+          <Button
+            variant={isConnected ? 'secondary' : 'primary'}
+            title={isConnected ? 'Refresh' : 'Connect'}
+            onPress={() => isConnected ? MeshManager.requestCatalog(item.deviceId) : handleConnect(item.deviceId)}
+            style={styles.deviceButton}
+            textStyle={styles.deviceButtonText}
+          />
+        }
+      />
     );
-  }
-
-  async function toggleScanning() {
-    await MeshManager.setScanning(!radioState.scanning);
-  }
-
-  async function toggleAdvertising() {
-    await MeshManager.setAdvertising(!radioState.advertising);
-  }
-
-  async function restartMesh() {
-    await MeshManager.restartMesh();
   }
 
   function renderCatalogItem({ item }) {
     const loading = !!downloadingHashes[item.hash];
+    const displayUrl = item.url.length > 35 ? item.url.substring(0, 32) + '...' : item.url;
     return (
-      <View style={styles.catalogItem}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.catalogTitle} numberOfLines={1}>{item.title}</Text>
-          <Text style={styles.catalogSub} numberOfLines={1}>{item.url}</Text>
-          <Text style={styles.catalogSub}>Peer {item.deviceId.slice(0, 8)}</Text>
-        </View>
-        <TouchableOpacity style={styles.downloadBtn} onPress={() => handleDownload(item)} disabled={loading}>
-          {loading ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="cloud-download-outline" size={20} color="#fff" />
-          )}
-        </TouchableOpacity>
-      </View>
+      <ListItem
+        title={item.title}
+        subtitle={`${displayUrl}\nPeer ${item.deviceId.slice(0, 8)}`}
+        icon={<FontAwesome name="file-text-o" />}
+        rightElement={
+          <Button
+            variant="ghost"
+            title=""
+            icon={loading ? <ActivityIndicator size="small" color={theme.primary} /> : <FontAwesome name="download" size={20} color={theme.primary} />}
+            onPress={() => handleDownload(item)}
+            disabled={loading}
+          />
+        }
+      />
     );
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Nearby Devices</Text>
-        <Text style={styles.subtitle}>{nearbyDevices.length} nearby • {connectedPeers.length} connected</Text>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View style={[styles.header, { paddingHorizontal: spacing.xl, marginBottom: spacing.l }]}>
+        <Text style={[styles.title, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
+          Nearby Devices
+        </Text>
+        <Text style={[styles.subtitle, { color: theme.textSecondary, fontSize: typography.bodySmall.fontSize }]}>
+          {nearbyDevices.length} nearby • {connectedPeers.length} connected
+        </Text>
       </View>
 
-      <View style={styles.controlsWrap}>
-        <TouchableOpacity
-          style={[styles.controlBtn, radioState.scanning ? styles.controlBtnOn : styles.controlBtnOff]}
-          onPress={toggleScanning}
-        >
-          <Text style={styles.controlBtnText}>{radioState.scanning ? 'Stop Scan' : 'Start Scan'}</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.controlBtn, radioState.advertising ? styles.controlBtnOn : styles.controlBtnOff]}
-          onPress={toggleAdvertising}
-        >
-          <Text style={styles.controlBtnText}>{radioState.advertising ? 'Stop Advertise' : 'Start Advertise'}</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={[styles.controlBtn, styles.controlBtnNeutral]} onPress={restartMesh}>
-          <Text style={styles.controlBtnText}>Restart Mesh</Text>
-        </TouchableOpacity>
+      <View style={[styles.controlsWrap, { marginHorizontal: spacing.xl, gap: spacing.s }]}>
+        <Button
+          variant="secondary"
+          title={radioState.scanning ? 'Scanning...' : 'Start Scan'}
+          style={[styles.controlBtn, radioState.scanning && { backgroundColor: `${theme.success}15`, borderColor: theme.success, borderWidth: 1 }]}
+          textStyle={radioState.scanning ? { color: theme.success } : null}
+          onPress={() => MeshManager.setScanning(!radioState.scanning)}
+        />
+        <Button
+          variant="secondary"
+          title={radioState.advertising ? 'Advertising' : 'Start Adv'}
+          style={[styles.controlBtn, radioState.advertising && { backgroundColor: `${theme.accent}15`, borderColor: theme.accent, borderWidth: 1 }]}
+          textStyle={radioState.advertising ? { color: theme.accent } : null}
+          onPress={() => MeshManager.setAdvertising(!radioState.advertising)}
+        />
       </View>
 
-      {meshWarning ? <Text style={styles.warningText}>{meshWarning}</Text> : null}
+      {meshWarning ? (
+        <View style={[styles.warningBox, { marginHorizontal: spacing.xl, backgroundColor: isDark ? '#2D2A1E' : '#FFF9E6', borderColor: isDark ? '#5E5431' : '#FFEAB3' }]}>
+           <FontAwesome name="warning" size={16} color={isDark ? '#E6B800' : '#856404'} />
+           <Text style={[styles.warningText, { color: isDark ? '#E6B800' : '#856404' }]}>{meshWarning}</Text>
+        </View>
+      ) : null}
 
       <FlatList
         data={nearbyDevices}
         renderItem={renderDevice}
         keyExtractor={(item) => item.deviceId}
-        ListEmptyComponent={<Text style={styles.emptyText}>No nearby devices detected yet.</Text>}
-        contentContainerStyle={{ paddingBottom: 10 }}
+        ListEmptyComponent={<Text style={[styles.emptyText, { color: theme.textSecondary, marginTop: 40 }]}>Looking for nearby devices...</Text>}
+        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 20 }}
       />
 
-      <View style={styles.catalogHeader}>
-        <Text style={styles.catalogHeaderText}>Peer Catalog</Text>
+      <View style={[styles.catalogHeader, { paddingHorizontal: spacing.xl }]}>
+        <Text style={[styles.catalogHeaderText, { color: theme.textPrimary, fontSize: typography.headingM.fontSize }]}>
+          Peer Catalog
+        </Text>
       </View>
 
       <FlatList
         data={catalogRows}
         renderItem={renderCatalogItem}
         keyExtractor={(item) => item.key}
-        ListEmptyComponent={<Text style={styles.emptyText}>Connect to a device and request catalog.</Text>}
-        contentContainerStyle={{ paddingBottom: 18 }}
+        ListEmptyComponent={
+          <Card style={styles.emptyCard}>
+            <Text style={[styles.emptyText, { color: theme.textSecondary }]}>Connect to a device to see their available pages.</Text>
+          </Card>
+        }
+        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingTop: spacing.m, paddingBottom: 40 }}
       />
     </View>
   );
@@ -219,132 +221,65 @@ export default function MeshScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0d1a',
-    paddingTop: 48,
+    paddingTop: 60,
   },
   header: {
-    paddingHorizontal: 20,
-    marginBottom: 12,
+    marginBottom: 8,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
   subtitle: {
-    color: '#8b8b9d',
+    fontWeight: '500',
     marginTop: 4,
   },
   controlsWrap: {
     flexDirection: 'row',
-    marginHorizontal: 20,
-    marginBottom: 10,
-    gap: 8,
+    marginBottom: 20,
   },
   controlBtn: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
+    height: 44,
   },
-  controlBtnOn: {
-    backgroundColor: '#00a86b',
-  },
-  controlBtnOff: {
-    backgroundColor: '#4d4d5f',
-  },
-  controlBtnNeutral: {
-    backgroundColor: '#6c63ff',
-  },
-  controlBtnText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  warningText: {
-    marginHorizontal: 20,
-    marginBottom: 10,
-    color: '#ffd166',
-    fontSize: 12,
-  },
-  deviceCard: {
+  warningBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    marginHorizontal: 20,
-    marginBottom: 10,
-    borderRadius: 10,
-    padding: 14,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 20,
+    gap: 8,
   },
-  deviceInfo: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  deviceName: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  deviceMeta: {
-    color: '#888',
+  warningText: {
     fontSize: 12,
-    marginTop: 2,
+    fontWeight: '600',
+    flex: 1,
   },
-  actionBtn: {
-    backgroundColor: '#6c63ff',
-    paddingHorizontal: 12,
+  deviceButton: {
     paddingVertical: 8,
-    borderRadius: 8,
+    paddingHorizontal: 16,
+    height: 36,
   },
-  secondaryBtn: {
-    backgroundColor: '#00a8cc',
-  },
-  actionText: {
-    color: '#fff',
-    fontWeight: '700',
+  deviceButtonText: {
     fontSize: 12,
   },
   catalogHeader: {
-    paddingHorizontal: 20,
-    marginTop: 8,
-    marginBottom: 8,
+    marginTop: 16,
+    marginBottom: 4,
   },
   catalogHeaderText: {
-    color: '#fff',
-    fontSize: 16,
     fontWeight: '700',
   },
-  catalogItem: {
-    flexDirection: 'row',
+  emptyCard: {
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    marginHorizontal: 20,
-    marginBottom: 10,
-    borderRadius: 10,
-    padding: 12,
-    gap: 10,
-  },
-  catalogTitle: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  catalogSub: {
-    color: '#888',
-    fontSize: 11,
-    marginTop: 2,
-  },
-  downloadBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#6c63ff',
     justifyContent: 'center',
-    alignItems: 'center',
+    padding: 32,
+    borderStyle: 'dashed',
+    borderWidth: 1.5,
   },
   emptyText: {
-    color: '#888',
     textAlign: 'center',
-    marginVertical: 20,
+    fontWeight: '500',
   },
 });

@@ -5,15 +5,18 @@ import {
   StyleSheet,
   TextInput,
   FlatList,
-  TouchableOpacity,
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
+import Card from '../components/Card';
+import ListItem from '../components/ListItem';
 import * as CacheManager from '../services/CacheManager';
 import MeshManager from '../services/MeshManager';
 
 export default function SearchScreen({ navigation }) {
+  const { theme, spacing, typography, isDark } = useTheme();
   const [query, setQuery] = useState('');
   const [localResults, setLocalResults] = useState([]);
   const [meshResults, setMeshResults] = useState([]);
@@ -93,57 +96,57 @@ export default function SearchScreen({ navigation }) {
   }
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Search Network</Text>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View style={[styles.header, { paddingHorizontal: spacing.xl }]}>
+        <Text style={[styles.title, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
+          Search Mesh
+        </Text>
       </View>
 
-      <View style={styles.searchBar}>
-        <Ionicons name="search" size={20} color="#888" style={styles.searchIcon} />
+      <View style={[styles.searchBar, { backgroundColor: theme.card, borderColor: theme.border, marginHorizontal: spacing.xl }]}>
+        <FontAwesome name="search" size={18} color={theme.textSecondary} style={styles.searchIcon} />
         <TextInput
-          style={styles.input}
-          placeholder="Search local cache and connected peers..."
-          placeholderTextColor="#888"
+          style={[styles.input, { color: theme.textPrimary }]}
+          placeholder="Search local and nearby peers..."
+          placeholderTextColor={theme.textSecondary}
           value={query}
           onChangeText={setQuery}
           returnKeyType="search"
           autoCorrect={false}
         />
-        {searching && <ActivityIndicator color="#6c63ff" />}
+        {searching && <ActivityIndicator color={theme.primary} />}
       </View>
 
       <FlatList
         data={allResults}
         keyExtractor={(item) => item.hash}
+        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 40 }}
         renderItem={({ item }) => (
-          <TouchableOpacity style={styles.resultCard} onPress={() => viewResult(item)} activeOpacity={0.7}>
-            <View style={styles.resultIcon}>
-              <Ionicons
-                name={item.source === 'mesh' ? 'cloud-outline' : 'phone-portrait-outline'}
-                size={24}
-                color={item.source === 'mesh' ? '#3498db' : '#6c63ff'}
-              />
-            </View>
-            <View style={styles.resultText}>
-              <Text style={styles.resultTitle} numberOfLines={1}>
-                {item.title}
-              </Text>
-              <Text style={styles.resultUrl} numberOfLines={1}>
-                {item.source === 'mesh' ? `On peer: ${item.deviceId?.slice(0, 8) || 'unknown'}` : item.url}
-              </Text>
-            </View>
-            {requestingHash === item.hash ? (
-              <ActivityIndicator size="small" color="#6c63ff" />
-            ) : (
-              <Ionicons name="chevron-forward" size={20} color="#444" />
-            )}
-          </TouchableOpacity>
+          <ListItem
+            title={item.title}
+            subtitle={item.source === 'mesh' ? `Peer: ${item.deviceId?.slice(0, 8) || 'unknown'}` : (item.url.length > 40 ? item.url.substring(0, 37) + '...' : item.url)}
+            icon={<FontAwesome name={item.source === 'mesh' ? 'share-alt' : 'file-text-o'} />}
+            onPress={() => viewResult(item)}
+            rightElement={
+              requestingHash === item.hash ? (
+                <ActivityIndicator size="small" color={theme.primary} />
+              ) : (
+                <View style={[styles.sourceBadge, { backgroundColor: item.source === 'mesh' ? `${theme.accent}15` : `${theme.primary}15` }]}>
+                  <Text style={[styles.sourceText, { color: item.source === 'mesh' ? theme.accent : theme.primary }]}>
+                    {item.source === 'mesh' ? 'MESH' : 'LOCAL'}
+                  </Text>
+                </View>
+              )
+            }
+          />
         )}
         ListEmptyComponent={
-          !searching && query.length > 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyText}>No results found for "{query}"</Text>
-            </View>
+          !searching && query.trim().length > 0 ? (
+            <Card style={styles.emptyCard}>
+              <FontAwesome name="search" size={48} color={theme.textSecondary} style={{ opacity: 0.5 }} />
+              <Text style={[styles.emptyText, { color: theme.textPrimary, marginTop: 12 }]}>No results found</Text>
+              <Text style={[styles.emptyHint, { color: theme.textSecondary }]}>We couldn't find matches for "{query}" in the mesh area.</Text>
+            </Card>
           ) : null
         }
       />
@@ -154,26 +157,23 @@ export default function SearchScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0d1a',
-    paddingTop: 50,
+    paddingTop: 60,
   },
   header: {
-    paddingHorizontal: 20,
-    marginBottom: 15,
+    marginBottom: 20,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#fff',
+    fontWeight: '800',
+    letterSpacing: -0.5,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    borderRadius: 10,
-    marginHorizontal: 20,
-    paddingHorizontal: 15,
-    marginBottom: 20,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    height: 52,
+    marginBottom: 24,
   },
   searchIcon: {
     marginRight: 10,
@@ -181,40 +181,25 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     height: 50,
-    color: '#fff',
-    fontSize: 16,
+    fontSize: 15,
   },
-  resultCard: {
-    flexDirection: 'row',
+  sourceBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  sourceText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  emptyCard: {
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    marginHorizontal: 20,
-    marginBottom: 10,
-    borderRadius: 10,
-    padding: 15,
+    justifyContent: 'center',
+    padding: 40,
+    marginTop: 40,
+    borderStyle: 'dashed',
+    borderWidth: 1.5,
   },
-  resultIcon: {
-    marginRight: 15,
-  },
-  resultText: {
-    flex: 1,
-  },
-  resultTitle: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  resultUrl: {
-    color: '#888',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  emptyState: {
-    marginTop: 50,
-    alignItems: 'center',
-  },
-  emptyText: {
-    color: '#888',
-    fontSize: 16,
-  },
+  emptyText: { fontSize: 16, fontWeight: '700' },
+  emptyHint: { fontSize: 13, textAlign: 'center', marginTop: 4, lineHeight: 18 },
 });

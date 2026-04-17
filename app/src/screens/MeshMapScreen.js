@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, FlatList } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
+import ListItem from '../components/ListItem';
+import Card from '../components/Card';
 import MeshManager from '../services/MeshManager';
 
-function Dot({ color }) {
-  return <View style={[styles.dot, { backgroundColor: color }]} />;
-}
-
 export default function MeshMapScreen() {
+  const { theme, spacing, typography, isDark } = useTheme();
   const [nearby, setNearby] = useState([]);
   const [connected, setConnected] = useState([]);
 
@@ -32,42 +32,54 @@ export default function MeshMapScreen() {
   const connectedSet = useMemo(() => new Set(connected.map((d) => d.deviceId)), [connected]);
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Mesh Map</Text>
-        <Text style={styles.subtitle}>{nearby.length} nearby • {connected.length} connected</Text>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <View style={[styles.header, { paddingHorizontal: spacing.xl }]}>
+        <Text style={[styles.title, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
+          Mesh Topology
+        </Text>
+        <Text style={[styles.subtitle, { color: theme.textSecondary, fontSize: typography.bodySmall.fontSize }]}>
+          {nearby.length} nearby • {connected.length} connected
+        </Text>
       </View>
 
-      <View style={styles.radarCard}>
-        <View style={styles.ringOuter}>
-          <View style={styles.ringMiddle}>
-            <View style={styles.ringInner}>
-              <View style={styles.localNode}>
-                <Ionicons name="phone-portrait" size={20} color="#fff" />
+      <Card style={[styles.radarCard, { marginHorizontal: spacing.xl }]}>
+        <View style={[styles.ringOuter, { borderColor: theme.border }]}>
+          <View style={[styles.ringMiddle, { borderColor: theme.border }]}>
+            <View style={[styles.ringInner, { borderColor: theme.border }]}>
+              <View style={[styles.localNode, { backgroundColor: theme.primary }]}>
+                <FontAwesome name="mobile" size={24} color="#fff" />
               </View>
             </View>
           </View>
         </View>
-      </View>
+        <Text style={[styles.radarLabel, { color: theme.textSecondary }]}>LOCAL NODE</Text>
+      </Card>
 
       <FlatList
         data={nearby}
         keyExtractor={(item) => item.deviceId}
-        contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 16 }}
-        ListEmptyComponent={<Text style={styles.empty}>No nearby peers yet.</Text>}
+        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 40 }}
+        ListEmptyComponent={
+          <Text style={[styles.empty, { color: theme.textSecondary }]}>
+            No nearby nodes detected in range.
+          </Text>
+        }
         renderItem={({ item }) => {
           const isConnected = connectedSet.has(item.deviceId);
           return (
-            <View style={styles.row}>
-              <Dot color={isConnected ? '#00d084' : '#999'} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.name}>{item.deviceName}</Text>
-                <Text style={styles.meta}>ID {item.deviceId.slice(0, 8)} • {item.pageCount || 0} pages</Text>
-              </View>
-              <Text style={[styles.state, { color: isConnected ? '#00d084' : '#999' }]}>
-                {isConnected ? 'Connected' : 'Nearby'}
-              </Text>
-            </View>
+            <ListItem
+              title={item.deviceName}
+              subtitle={`ID ${item.deviceId.slice(0, 8)} • ${item.pageCount || 0} pages`}
+              icon={<FontAwesome name="wifi" />}
+              rightElement={
+                <View style={styles.statusRow}>
+                   <View style={[styles.dot, { backgroundColor: isConnected ? theme.success : theme.textSecondary }]} />
+                   <Text style={[styles.state, { color: isConnected ? theme.success : theme.textSecondary }]}>
+                    {isConnected ? 'CONNECTED' : 'NEARBY'}
+                  </Text>
+                </View>
+              }
+            />
           );
         }}
       />
@@ -78,46 +90,39 @@ export default function MeshMapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0d1a',
-    paddingTop: 48,
+    paddingTop: 60,
   },
   header: {
-    paddingHorizontal: 20,
-    marginBottom: 14,
+    marginBottom: 20,
   },
   title: {
-    color: '#fff',
-    fontSize: 24,
     fontWeight: '800',
+    letterSpacing: -0.5,
   },
   subtitle: {
     marginTop: 4,
-    color: '#888',
+    fontWeight: '500',
   },
   radarCard: {
-    marginHorizontal: 20,
-    marginBottom: 16,
-    borderRadius: 14,
-    backgroundColor: '#1a1a2e',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 20,
+    paddingVertical: 32,
+    marginBottom: 24,
   },
   ringOuter: {
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    borderWidth: 1,
-    borderColor: '#ffffff22',
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
+    borderStyle: 'dashed',
   },
   ringMiddle: {
-    width: 130,
-    height: 130,
-    borderRadius: 65,
+    width: 140,
+    height: 140,
+    borderRadius: 70,
     borderWidth: 1,
-    borderColor: '#ffffff22',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -126,49 +131,45 @@ const styles = StyleSheet.create({
     height: 80,
     borderRadius: 40,
     borderWidth: 1,
-    borderColor: '#ffffff22',
     alignItems: 'center',
     justifyContent: 'center',
   },
   localNode: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#6c63ff',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
-  row: {
+  radarLabel: {
+    marginTop: 16,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    borderRadius: 10,
-    marginBottom: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 10,
+    gap: 6,
   },
   dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  name: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  meta: {
-    color: '#888',
-    fontSize: 11,
-    marginTop: 1,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   state: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: '800',
   },
   empty: {
     textAlign: 'center',
-    color: '#888',
-    marginTop: 12,
+    fontSize: 14,
+    fontWeight: '500',
+    marginTop: 40,
   },
 });

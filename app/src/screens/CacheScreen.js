@@ -9,11 +9,15 @@ import {
   Alert,
   RefreshControl,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
+import Card from '../components/Card';
+import Button from '../components/Button';
+import ListItem from '../components/ListItem';
 import * as CacheManager from '../services/CacheManager';
 
 export default function CacheScreen({ navigation }) {
+  const { theme, spacing, typography, isDark } = useTheme();
   const [pages, setPages] = useState([]);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all'); // all, local, mesh
@@ -60,80 +64,73 @@ export default function CacheScreen({ navigation }) {
     ]);
   };
 
-  const viewPage = (hash) => {
-    navigation.navigate('Viewer', { hash });
+  const renderItem = ({ item }) => {
+    const displayUrl = item.url.length > 40 ? item.url.substring(0, 37) + '...' : item.url;
+    return (
+      <ListItem
+        title={item.title}
+        subtitle={`${displayUrl}\n${CacheManager.formatSize(item.size)} • ${item.accessCount} views`}
+        icon={<FontAwesome name={item.source === 'mesh' ? 'share-alt' : 'file-text-o'} />}
+        onPress={() => navigation.navigate('Viewer', { hash: item.hash })}
+        rightElement={
+          <TouchableOpacity style={styles.deleteBtn} onPress={() => deletePage(item.hash, item.title)}>
+            <FontAwesome name="trash" size={20} color={theme.error} />
+          </TouchableOpacity>
+        }
+      />
+    );
   };
 
-  const renderItem = ({ item }) => (
-    <TouchableOpacity style={styles.pageCard} onPress={() => viewPage(item.hash)} activeOpacity={0.7}>
-      <View style={styles.pageIcon}>
-        <Ionicons
-          name={item.source === 'mesh' ? 'git-network-outline' : 'document-outline'}
-          size={22}
-          color={item.source === 'mesh' ? '#00d2ff' : '#6c63ff'}
-        />
-      </View>
-      <View style={styles.pageInfo}>
-        <Text style={styles.pageTitle} numberOfLines={1}>
-          {item.title}
-        </Text>
-        <Text style={styles.pageUrl} numberOfLines={1}>
-          {item.url}
-        </Text>
-        <View style={styles.pageMeta}>
-          <Text style={styles.metaText}>{CacheManager.formatSize(item.size)}</Text>
-          <Text style={styles.metaDot}>•</Text>
-          <Text style={styles.metaText}>{item.accessCount}× viewed</Text>
-          <Text style={styles.metaDot}>•</Text>
-          <Text style={[styles.metaText, { color: item.source === 'mesh' ? '#00d2ff' : '#6c63ff' }]}>
-            {item.source === 'mesh' ? '🔗 Mesh' : '📱 Local'}
-          </Text>
-        </View>
-      </View>
-      <TouchableOpacity style={styles.deleteBtn} onPress={() => deletePage(item.hash, item.title)}>
-        <Ionicons name="trash-outline" size={18} color="#ff4444" />
-      </TouchableOpacity>
-    </TouchableOpacity>
-  );
-
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>📦 Cache</Text>
-        <Text style={styles.headerCount}>{pages.length} pages</Text>
+      <View style={[styles.header, { borderBottomColor: theme.border }]}>
+        <Text style={[styles.headerTitle, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
+          Cache Library
+        </Text>
+        <View style={[styles.badge, { backgroundColor: `${theme.primary}15` }]}>
+           <Text style={[styles.badgeText, { color: theme.primary }]}>{pages.length} pages</Text>
+        </View>
       </View>
 
       {/* Search */}
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={18} color="#666" />
+      <View style={[styles.searchBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <FontAwesome name="search" size={16} color={theme.textSecondary} />
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInput, { color: theme.textPrimary }]}
           value={query}
-          onChangeText={(text) => setQuery(text)}
-          placeholder="Search cached pages..."
-          placeholderTextColor="#666"
+          onChangeText={setQuery}
+          placeholder="Search your library..."
+          placeholderTextColor={theme.textSecondary}
         />
         {query ? (
           <TouchableOpacity onPress={() => setQuery('')}>
-            <Ionicons name="close-circle" size={18} color="#666" />
+            <FontAwesome name="times-circle" size={18} color={theme.textSecondary} />
           </TouchableOpacity>
         ) : null}
       </View>
 
       {/* Filters */}
-      <View style={styles.filters}>
-        {['all', 'local', 'mesh'].map((f) => (
-          <TouchableOpacity
-            key={f}
-            style={[styles.filterChip, filter === f && styles.filterActive]}
-            onPress={() => setFilter(f)}
-          >
-            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-              {f === 'all' ? '📋 All' : f === 'local' ? '📱 Local' : '🔗 Mesh'}
-            </Text>
-          </TouchableOpacity>
-        ))}
+      <View style={[styles.filters, { paddingHorizontal: spacing.xl }]}>
+        {['all', 'local', 'mesh'].map((f) => {
+          const isActive = filter === f;
+          return (
+            <Button
+              key={f}
+              variant="secondary"
+              title={f === 'all' ? 'All' : f === 'local' ? 'Local' : 'Mesh'}
+              onPress={() => setFilter(f)}
+              style={[
+                styles.filterChip,
+                isActive && { backgroundColor: `${theme.primary}15`, borderColor: theme.primary, borderWidth: 1 }
+              ]}
+              textStyle={[
+                styles.filterText,
+                isActive && { color: theme.primary }
+              ]}
+            />
+          );
+        })}
       </View>
 
       {/* Page List */}
@@ -141,14 +138,14 @@ export default function CacheScreen({ navigation }) {
         data={pages}
         keyExtractor={(item) => item.hash}
         renderItem={renderItem}
-        contentContainerStyle={styles.list}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#6c63ff" />}
+        contentContainerStyle={[styles.list, { paddingHorizontal: spacing.xl }]}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.primary} />}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <Ionicons name="archive-outline" size={48} color="#333" />
-            <Text style={styles.emptyText}>No cached pages yet</Text>
-            <Text style={styles.emptyHint}>Go to Browser tab to cache your first page!</Text>
-          </View>
+          <Card style={styles.emptyCard}>
+            <FontAwesome name="archive" size={48} color={theme.textSecondary} style={{ opacity: 0.5 }} />
+            <Text style={[styles.emptyText, { color: theme.textPrimary, marginTop: 12 }]}>No pages found</Text>
+            <Text style={[styles.emptyHint, { color: theme.textSecondary }]}>Your cached knowledge will appear here.</Text>
+          </Card>
         }
       />
     </View>
@@ -156,71 +153,56 @@ export default function CacheScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0d0d1a' },
+  container: { flex: 1, paddingTop: 60 },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: 56,
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    backgroundColor: '#1a1a2e',
+    paddingHorizontal: 24,
+    marginBottom: 20,
   },
-  headerTitle: { fontSize: 22, fontWeight: '800', color: '#fff' },
-  headerCount: { fontSize: 14, color: '#6c63ff', fontWeight: '600' },
+  headerTitle: { fontWeight: '800', letterSpacing: -0.5 },
+  badge: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  badgeText: { fontSize: 12, fontWeight: '700' },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    marginHorizontal: 16,
-    marginTop: 12,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    gap: 8,
+    marginHorizontal: 24,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 16,
+    height: 48,
+    marginBottom: 16,
   },
-  searchInput: { flex: 1, color: '#fff', fontSize: 14, paddingVertical: 10 },
+  searchInput: { flex: 1, fontSize: 14, marginLeft: 10 },
   filters: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    marginTop: 10,
-    marginBottom: 6,
+    marginBottom: 20,
     gap: 8,
   },
   filterChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: '#1a1a2e',
+    paddingHorizontal: 16,
+    height: 36,
+    borderRadius: 18,
   },
-  filterActive: { backgroundColor: '#6c63ff' },
-  filterText: { color: '#888', fontSize: 12, fontWeight: '600' },
-  filterTextActive: { color: '#fff' },
-  list: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 100 },
-  pageCard: {
-    flexDirection: 'row',
+  filterText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  list: { paddingBottom: 100, paddingTop: 4 },
+  deleteBtn: { padding: 4, marginLeft: 8 },
+  emptyCard: {
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    gap: 12,
-  },
-  pageIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#ffffff08',
     justifyContent: 'center',
-    alignItems: 'center',
+    padding: 40,
+    marginTop: 40,
+    borderStyle: 'dashed',
+    borderWidth: 1.5,
   },
-  pageInfo: { flex: 1 },
-  pageTitle: { fontSize: 14, fontWeight: '700', color: '#fff' },
-  pageUrl: { fontSize: 11, color: '#666', marginTop: 2 },
-  pageMeta: { flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 6 },
-  metaText: { fontSize: 11, color: '#888' },
-  metaDot: { fontSize: 10, color: '#444' },
-  deleteBtn: { padding: 8 },
-  empty: { alignItems: 'center', paddingTop: 80, gap: 8 },
-  emptyText: { fontSize: 16, color: '#555', fontWeight: '600' },
-  emptyHint: { fontSize: 13, color: '#444' },
+  emptyText: { fontSize: 16, fontWeight: '700' },
+  emptyHint: { fontSize: 13, textAlign: 'center', marginTop: 4, lineHeight: 18 },
 });
