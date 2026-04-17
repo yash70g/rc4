@@ -119,10 +119,17 @@ class BLEManager {
             if (cleanName) displayName = cleanName;
         }
 
+        // Discovery Handshake: Create a compact JSON to fit in the advertisement
+        const compactMetadata = {
+            i: this.localMetadata.deviceId.slice(-6),
+            n: displayName.substring(0, 12),
+            p: this.localMetadata.pageCount
+        };
+
         await ExoBlePeripheral.startPeripheral({
           serviceUuid: SERVICE_UUID,
           deviceName: displayName,
-          metadata: JSON.stringify(this.localMetadata), // Still put full JSON in GATT record
+          metadata: JSON.stringify(compactMetadata), // Use compact JSON for the broadcast
         });
         this.advertising = true;
         console.log(`[BLEManager] Native peripheral started: ${displayName}`);
@@ -176,12 +183,19 @@ class BLEManager {
             if (cleanName) displayName = cleanName;
         }
         
+        // Discovery Handshake: Update with compact JSON
+        const compactMetadata = {
+            i: this.localMetadata.deviceId.slice(-6),
+            n: displayName.substring(0, 12),
+            p: this.localMetadata.pageCount
+        };
+        
         // Restart advertising with new name
         await ExoBlePeripheral.stopPeripheral();
         await ExoBlePeripheral.startPeripheral({
           serviceUuid: SERVICE_UUID,
           deviceName: displayName,
-          metadata: JSON.stringify(this.localMetadata),
+          metadata: JSON.stringify(compactMetadata),
         });
       } catch (e) {
         console.warn('[BLEManager] Update advertising data error:', e.message);
@@ -346,11 +360,29 @@ class BLEManager {
       candidates.push(device.manufacturerData);
     }
 
-    for (const entry of candidates) {
+    for (let entry of candidates) {
       try {
-        if (entry.startsWith('{') && entry.includes('deviceId')) {
-          const parsed = JSON.parse(entry);
-          return normalizeMetadata(parsed);
+        // Try to decode if it looks like Base64 (common in BLE stack)
+        let decoded = entry;
+        if (!entry.startsWith('{') && /^[A-Za-z0-9+/=]+$/.test(entry)) {
+            try {
+                // Safe Base64 decode for React Native
+                decoded = Buffer.from(entry, 'base64').toString('utf8');
+            } catch (e) { /* ignore */ }
+        }
+
+        if (decoded.startsWith('{')) {
+          const parsed = JSON.parse(decoded);
+          
+          // Handle both full and compact formats
+          if (parsed.deviceId || parsed.i) {
+            return normalizeMetadata({
+              deviceId: parsed.deviceId || (parsed.i ? `rc-node-${parsed.i}` : (parsed.id ? `rc-node-${parsed.id}` : null)),
+              deviceName: parsed.deviceName || parsed.n || parsed.name,
+              pageCount: parsed.pageCount || parsed.p || parsed.count,
+              hashPreview: parsed.hashPreview || [],
+            });
+          }
         }
       } catch (e) {
         // Ignore invalid metadata payloads.

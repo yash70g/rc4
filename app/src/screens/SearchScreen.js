@@ -41,11 +41,20 @@ export default function SearchScreen({ navigation }) {
       }
     };
 
+    const onError = ({ message, hash }) => {
+      if (hash && hash === requestingHash) {
+        setRequestingHash(null);
+      }
+      Alert.alert('Mesh Error', message);
+    };
+
     MeshManager.on('page-received', onPageReceived);
     MeshManager.on('permission-pending', onPermissionPending);
+    MeshManager.on('error', onError);
     return () => {
       MeshManager.off('page-received', onPageReceived);
       MeshManager.off('permission-pending', onPermissionPending);
+      MeshManager.off('error', onError);
     };
   }, [requestingHash, query]);
 

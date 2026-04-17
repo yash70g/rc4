@@ -119,9 +119,11 @@ class MeshManager {
     const stats = await CacheManager.getStats();
     const catalog = await CacheManager.getCatalog();
     const hashPreview = catalog.slice(0, 5).map((p) => p.hash);
+    const myName = await CacheManager.getSetting('deviceName', 'Reality Cache Device');
 
     await BLEManager.updateAdvertisingMetadata({
       pageCount: stats.count,
+      deviceName: myName,
       hashPreview,
     });
   }
@@ -234,6 +236,7 @@ class MeshManager {
       case 'PERMISSION_DENIED':
         this.emit('error', {
           deviceId,
+          hash: data.hash,
           message: `Peer denied permission to download: ${data.title || 'Private content'}`,
         });
         break;
@@ -241,6 +244,7 @@ class MeshManager {
       case 'PAGE_NOT_FOUND':
         this.emit('error', {
           deviceId,
+          hash: data.hash,
           message: `Peer could not find content for hash: ${data.hash}`,
         });
         break;

@@ -65,7 +65,14 @@ export default function MeshScreen() {
       });
       Alert.alert('Page Received', `Downloaded "${title}" into local cache.`);
     };
-    const onError = ({ message }) => {
+    const onError = ({ message, hash }) => {
+      if (hash) {
+        setDownloadingHashes((prev) => {
+          const next = { ...prev };
+          delete next[hash];
+          return next;
+        });
+      }
       Alert.alert('Mesh Error', message);
     };
     const onWarning = ({ message }) => {
@@ -121,10 +128,12 @@ export default function MeshScreen() {
 
   function renderDevice({ item }) {
     const isConnected = connectedDeviceSet.has(item.deviceId);
+    const shortId = item.deviceId.replace('rc-node-', '').replace('ble-', '').slice(0, 8).toUpperCase();
+
     return (
       <ListItem
         title={item.deviceName}
-        subtitle={`${item.pageCount || 0} pages shared`}
+        subtitle={`ID: ${shortId} • ${item.pageCount || 0} pages shared`}
         icon={<FontAwesome name="mobile" />}
         rightElement={
           <Button
