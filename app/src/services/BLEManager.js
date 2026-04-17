@@ -123,7 +123,6 @@ class BLEManager {
         const compactMetadata = {
             i: this.localMetadata.deviceId.slice(-6),
             n: displayName.substring(0, 12),
-            p: this.localMetadata.pageCount
         };
 
         await ExoBlePeripheral.startPeripheral({
@@ -187,7 +186,6 @@ class BLEManager {
         const compactMetadata = {
             i: this.localMetadata.deviceId.slice(-6),
             n: displayName.substring(0, 12),
-            p: this.localMetadata.pageCount
         };
         
         // Restart advertising with new name

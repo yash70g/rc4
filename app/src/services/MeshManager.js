@@ -150,6 +150,16 @@ class MeshManager {
 
   handleDeviceFound(device) {
     this.nearbyDevices.set(device.deviceId, device);
+    
+    // Autonomous Discovery: If we don't have a catalog for this device yet,
+    // and weren't already connected, try to fetch it in the background.
+    if (!this.peerCatalogs.has(device.deviceId) && !this.connectedPeers.has(device.deviceId)) {
+        console.log(`[MeshManager] Autonomous sync starting for: ${device.deviceName || device.deviceId}`);
+        this.connectToDevice(device.deviceId).catch(e => {
+            console.warn(`[MeshManager] Auto-sync failed for ${device.deviceId}:`, e.message);
+        });
+    }
+
     this.emit('nearby-devices-update', this.getNearbyDevices());
     this.emit('mesh-state', this.getNetworkStats());
   }

@@ -37,10 +37,15 @@ export default function MeshScreen() {
 
     const rows = [];
     Object.entries(catalogs).forEach(([deviceId, pages]) => {
+      const peer = connectedPeers.find(p => p.deviceId === deviceId) || 
+                   nearbyDevices.find(p => p.deviceId === deviceId);
+      const peerName = peer?.deviceName || `Peer-${deviceId.slice(0, 8)}`;
+
       pages.forEach((page) => {
         rows.push({
           key: `${deviceId}:${page.hash}`,
           deviceId,
+          peerName,
           hash: page.hash,
           title: page.title,
           url: page.url,
@@ -133,7 +138,7 @@ export default function MeshScreen() {
     return (
       <ListItem
         title={item.deviceName}
-        subtitle={`ID: ${shortId} • ${item.pageCount || 0} pages shared`}
+        subtitle={`ID: ${shortId}`} // Removed page count subtitle
         icon={<FontAwesome name="mobile" />}
         rightElement={
           <Button
@@ -157,7 +162,7 @@ export default function MeshScreen() {
     return (
       <ListItem
         title={item.title}
-        subtitle={`${displayUrl}\nPeer ${item.deviceId.slice(0, 8)}`}
+        subtitle={`${displayUrl}\nOwner: ${item.peerName}`} // Added Peer Name
         icon={<FontAwesome name={item.isPrivate ? "lock" : "file-text-o"} color={item.isPrivate ? theme.accent : null} />}
         rightElement={
           <Button
