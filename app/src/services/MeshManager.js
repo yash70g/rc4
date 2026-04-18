@@ -39,21 +39,20 @@ class MeshManager {
     // Smooth Progress: Listen to logical chunks (1 of 400, 2 of 400...)
     // instead of low-level BLE radio bytes.
     PeerConnectionManager.onProgress = (deviceId, messageId, current, total) => {
-      const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
-      const incoming = this.incomingTransfers.get(resolvedId);
-      const hash = incoming?.hash;
+      // Map the physical transmission to the logical transfer via expected chunk size
+      const incoming = this.incomingTransfers.get(total);
       
-      // Heartbeat: Reset watchdog on every chunk arrival
-      if (hash) {
-        this.startWatchdog(resolvedId, hash);
+      if (incoming) {
+        // Heartbeat: Reset watchdog on every chunk arrival
+        this.startWatchdog(incoming.deviceId, incoming.hash);
+        
+        this.emit('transfer-progress', { 
+          deviceId: incoming.deviceId, 
+          received: current,
+          total: total,
+          hash: incoming.hash
+        });
       }
-      
-      this.emit('transfer-progress', { 
-        deviceId: resolvedId, 
-        received: current,
-        total: total,
-        hash: hash
-      });
     };
   }
 
@@ -318,6 +317,11 @@ class MeshManager {
             }
         }
         
+        let catalogChanged = false;
+        if (!this.peerCatalogs.has(resolvedId)) {
+          catalogChanged = true;
+        }
+
         this.peerCatalogs.set(resolvedId, {
             deviceName: data.deviceName || `Peer-${resolvedId.slice(0, 8)}`,
             pages: Array.isArray(data.pages) ? data.pages : []
@@ -328,6 +332,10 @@ class MeshManager {
           data.proxies.forEach(proxy => {
             if (proxy.deviceId === this.selfNodeId) return; // Ignore self
             
+            if (!this.routingTable.has(proxy.deviceId)) {
+              catalogChanged = true;
+            }
+
             this.routingTable.set(proxy.deviceId, {
               nextHop: resolvedId,
               distance: (data.distance || 1) + 1,
@@ -344,6 +352,10 @@ class MeshManager {
 
         this.emit('catalog-update', { deviceId: resolvedId, pages: this.getPeerCatalog(resolvedId) });
         this.emit('mesh-state', this.getNetworkStats());
+        
+        if (catalogChanged) {
+          this.shareCatalog(); // Gossip new findings across mesh
+        }
         break;
 
       case 'REQUEST_CATALOG':
@@ -354,13 +366,18 @@ class MeshManager {
         if (data.hash && data.url && data.title && typeof data.html === 'string') {
           await CacheManager.storeMeshContent(data.hash, data.url, data.title, data.html);
           
-          this.incomingTransfers.delete(resolvedId);
-
-          // Clear watchdog timer
+          // Clear transfer tracking
           const timerId = this.activeRequests.get(data.hash);
           if (timerId) {
             clearTimeout(timerId);
             this.activeRequests.delete(data.hash);
+          }
+          
+          // Cleanup map using hash
+          for (const [total, incoming] of this.incomingTransfers.entries()) {
+            if (incoming.hash === data.hash) {
+              this.incomingTransfers.delete(total);
+            }
           }
 
           await this.refreshAdvertisingMetadata();
@@ -404,9 +421,9 @@ class MeshManager {
         break;
 
       case 'TRANSFER_START':
-        this.incomingTransfers.set(resolvedId, { 
+        this.incomingTransfers.set(data.totalChunks, { 
             hash: data.hash, 
-            totalChunks: data.totalChunks 
+            deviceId: resolvedId 
         });
         this.emit('transfer-progress', {
           deviceId: resolvedId,
