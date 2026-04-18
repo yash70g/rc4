@@ -111,6 +111,10 @@ class PeerConnectionManager {
     this.on('connection-state', callback);
   }
 
+  setNameResolver(resolver) {
+    this.nameResolver = resolver;
+  }
+
   async connectToPeer(bleDeviceId, logicalId) {
     if (!bleDeviceId) return;
     const id = logicalId || bleDeviceId;
@@ -144,6 +148,19 @@ class PeerConnectionManager {
 
   isConnected(deviceId) {
     return this.connectedPeers.has(deviceId);
+  }
+
+  upgradeIdentity(oldId, newId) {
+    if (!this.connectedPeers.has(oldId)) return;
+    
+    // Move the address mapping
+    const bleId = this.addressMap.get(oldId);
+    this.addressMap.set(newId, bleId);
+    this.addressMap.delete(oldId);
+    
+    // Move peer tracker
+    this.connectedPeers.add(newId);
+    this.connectedPeers.delete(oldId);
   }
 
   async sendMessage(deviceId, data) {
@@ -216,7 +233,8 @@ class PeerConnectionManager {
     const index = frame.i ?? frame.index;
     const total = frame.t || frame.total;
 
-    console.log(`[PeerConnection] Incoming chunk ${index + 1}/${total} from ${deviceId}`);
+    const senderName = this.nameResolver ? this.nameResolver(deviceId) : deviceId;
+    console.log(`[PeerConnection] Incoming chunk ${index + 1}/${total} from ${senderName}`);
 
     const bufferKey = `${deviceId}:${messageId}`;
     const current = this.incomingBuffers.get(bufferKey) || {

@@ -17,6 +17,8 @@ class MeshManager {
     this.activeRequests = new Map(); // hash → timerId
     this.incomingTransfers = new Map(); // deviceId → { hash, totalSize }
     this.started = false;
+    this.selfNodeId = null;
+    this.routingTable = new Map(); // nodeId -> { nextHop, distance, timestamp }
 
     BLEManager.on('deviceFound', this.handleDeviceFound.bind(this));
     BLEManager.on('deviceUpdated', this.handleDeviceFound.bind(this));
@@ -29,6 +31,7 @@ class MeshManager {
 
     PeerConnectionManager.onMessage(this.handleMessage.bind(this));
     PeerConnectionManager.onConnectionStateChange(this.handleConnectionStateChange.bind(this));
+    PeerConnectionManager.setNameResolver((id) => this.getDeviceName(id));
     PeerConnectionManager.on('error', ({ message, deviceId }) => {
       this.emit('error', { message, deviceId });
     });
@@ -74,7 +77,10 @@ class MeshManager {
     this.started = true;
 
     await this.refreshAdvertisingMetadata();
-    await BLEManager.startAdvertising(BLEManager.getLocalMetadata());
+    const meta = BLEManager.getLocalMetadata();
+    this.selfNodeId = meta.deviceId;
+
+    await BLEManager.startAdvertising(meta);
     await BLEManager.startScanning();
 
     this.emit('nearby-devices-update', this.getNearbyDevices());
@@ -153,6 +159,7 @@ class MeshManager {
       deviceName: myName,
       hashPreview,
     });
+    this.selfNodeId = BLEManager.getLocalMetadata().deviceId;
   }
 
   getNearbyDevices() {
@@ -200,6 +207,38 @@ class MeshManager {
     this.emit('mesh-state', this.getNetworkStats());
   }
 
+  _upgradeConnectionIdentity(oldId, newId, bleDeviceId) {
+    if (!oldId || oldId === newId) return;
+    
+    console.log(`[MeshManager] Upgrading connection identity: ${oldId} -> ${newId}`);
+    this.bleIdMap.set(bleDeviceId, newId);
+    PeerConnectionManager.upgradeIdentity(oldId, newId);
+    
+    if (this.connectedPeers.has(oldId)) {
+       const peer = this.connectedPeers.get(oldId);
+       peer.deviceId = newId;
+       this.connectedPeers.set(newId, peer);
+       this.connectedPeers.delete(oldId);
+    }
+    
+    if (this.peerCatalogs.has(oldId)) {
+       this.peerCatalogs.set(newId, this.peerCatalogs.get(oldId));
+       this.peerCatalogs.delete(oldId);
+    }
+
+    if (this.incomingTransfers.has(oldId)) {
+       this.incomingTransfers.set(newId, this.incomingTransfers.get(oldId));
+       this.incomingTransfers.delete(oldId);
+    }
+
+    if (this.nearbyDevices.has(oldId)) {
+       const d = this.nearbyDevices.get(oldId);
+       d.deviceId = newId;
+       this.nearbyDevices.set(newId, d);
+       this.nearbyDevices.delete(oldId);
+    }
+  }
+
   handleConnectionStateChange({ deviceId, state }) {
     // Resolve logical deviceId: could be a bleDeviceId from an incoming connection
     const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
@@ -227,9 +266,36 @@ class MeshManager {
     // Resolve logical ID from the message source
     const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
 
+    // Handle Routed Packets (Multi-hop)
+    if (data.type === 'ROUTED_PACKET') {
+      const { src, dest, ttl, payload } = data;
+      const srcName = this.getDeviceName(src);
+      const destName = this.getDeviceName(dest);
+      const relayName = this.getDeviceName(resolvedId);
+      
+      if (dest === this.selfNodeId) {
+        console.log(`[MeshManager] Received relayed message (${payload.type}) from ${srcName} (via ${relayName})`);
+        return this.handleMessage({ deviceId: src, data: payload, isRelayed: true, relayNodeId: resolvedId });
+      } else if (ttl > 0) {
+        console.log(`[MeshManager] Relaying message (${payload.type}) from ${srcName} to ${destName} (TTL: ${ttl})`);
+        return this.routeMessage(dest, payload, ttl - 1, src);
+      } else {
+        console.warn(`[MeshManager] Dropping routed packet from ${srcName} to ${destName}: TTL expired`);
+        return;
+      }
+    }
+
     switch (data.type) {
       case 'CATALOG':
-        // Identity Handshake: if the peer sent their name, update our records
+        // Identity Handshake: if the peer shared its true Node ID, upgrade immediately
+        if (data.nodeId && data.nodeId !== resolvedId) {
+            const bleDeviceId = this.connectedPeers.get(resolvedId)?.bleDeviceId || deviceId;
+            this._upgradeConnectionIdentity(resolvedId, data.nodeId, bleDeviceId);
+            // Re-resolve after upgrade
+            return this.handleMessage({ deviceId: data.nodeId, data });
+        }
+
+        // Handle logical name update
         if (data.deviceName) {
             const currentPeer = this.connectedPeers.get(resolvedId);
             if (currentPeer) {
@@ -243,11 +309,31 @@ class MeshManager {
                 this.emit('nearby-devices-update', this.getNearbyDevices());
             }
         }
-
+        
         this.peerCatalogs.set(resolvedId, {
             deviceName: data.deviceName || `Peer-${resolvedId.slice(0, 8)}`,
             pages: Array.isArray(data.pages) ? data.pages : []
         });
+
+        // Proxy Diffusion: Process nodes reachable via this peer
+        if (Array.isArray(data.proxies)) {
+          data.proxies.forEach(proxy => {
+            if (proxy.deviceId === this.selfNodeId) return; // Ignore self
+            
+            this.routingTable.set(proxy.deviceId, {
+              nextHop: resolvedId,
+              distance: (data.distance || 1) + 1,
+              timestamp: Date.now()
+            });
+
+            this.peerCatalogs.set(proxy.deviceId, {
+              deviceName: proxy.deviceName,
+              pages: proxy.pages,
+              via: resolvedId
+            });
+          });
+        }
+
         this.emit('catalog-update', { deviceId: resolvedId, pages: this.getPeerCatalog(resolvedId) });
         this.emit('mesh-state', this.getNetworkStats());
         break;
@@ -352,12 +438,12 @@ class MeshManager {
   }
 
   requestCatalog(deviceId) {
-    return PeerConnectionManager.sendMessage(deviceId, { type: 'REQUEST_CATALOG' });
+    return this.routeMessage(deviceId, { type: 'REQUEST_CATALOG' });
   }
 
   requestPage(deviceId, hash) {
     this.startWatchdog(deviceId, hash);
-    return PeerConnectionManager.sendMessage(deviceId, { type: 'REQUEST_PAGE', hash });
+    return this.routeMessage(deviceId, { type: 'REQUEST_PAGE', hash });
   }
 
   startWatchdog(deviceId, hash) {
@@ -385,10 +471,24 @@ class MeshManager {
     const pages = catalog.map(({ hash, title, url, isPrivate }) => ({ hash, title, url, isPrivate }));
     const myName = await CacheManager.getSetting('deviceName', 'Reality Cache Device');
     
-    return PeerConnectionManager.sendMessage(deviceId, { 
+    const proxies = [];
+    this.peerCatalogs.forEach((entry, nodeId) => {
+      // Only share local catalogs (not relayed ones) to prevent infinite loops
+      if (nodeId !== deviceId && !entry.via) {
+        proxies.push({
+          deviceId: nodeId,
+          deviceName: entry.deviceName,
+          pages: entry.pages
+        });
+      }
+    });
+
+    return this.routeMessage(deviceId, { 
         type: 'CATALOG', 
+        nodeId: this.selfNodeId,
         pages,
-        deviceName: myName 
+        deviceName: myName,
+        proxies
     });
   }
 
@@ -402,7 +502,7 @@ class MeshManager {
 
     const page = await CacheManager.getByHash(hash);
     if (!page) {
-      PeerConnectionManager.sendMessage(deviceId, {
+      this.routeMessage(deviceId, {
         type: 'PAGE_NOT_FOUND',
         hash,
       });
@@ -426,7 +526,7 @@ class MeshManager {
       });
 
       // Notify requester
-      PeerConnectionManager.sendMessage(deviceId, {
+      this.routeMessage(deviceId, {
         type: 'PERMISSION_PENDING',
         hash,
       });
@@ -445,14 +545,14 @@ class MeshManager {
     const totalChunks = Math.ceil(rawPayload.length / 150);
 
     // Announce transfer start for progress tracking
-    await PeerConnectionManager.sendMessage(deviceId, {
+    await this.routeMessage(deviceId, {
         type: 'TRANSFER_START',
         hash: page.hash,
         totalChunks: totalChunks,
         title: page.title
     });
 
-    PeerConnectionManager.sendMessage(deviceId, {
+    this.routeMessage(deviceId, {
       type: 'PAGE_DATA',
       hash: page.hash,
       html: page.html,
@@ -473,7 +573,7 @@ class MeshManager {
     if (set) set.delete(deviceId);
     
     const page = await CacheManager.getByHash(hash);
-    PeerConnectionManager.sendMessage(deviceId, {
+    this.routeMessage(deviceId, {
       type: 'PERMISSION_DENIED',
       hash,
       title: page?.title,
@@ -538,6 +638,54 @@ class MeshManager {
 
   isConnected() {
     return this.connectedPeers.size > 0;
+  }
+
+  getDeviceName(deviceId) {
+    if (deviceId === this.selfNodeId) return 'Me';
+    return this.connectedPeers.get(deviceId)?.deviceName || 
+           this.peerCatalogs.get(deviceId)?.deviceName || 
+           `Peer-${deviceId?.slice(0, 8)}`;
+  }
+
+  /**
+   * Non-invasive Smart Routing
+   */
+  async routeMessage(destinationId, payload, ttl = 3, customSrc = null) {
+    if (!destinationId) return false;
+    const sourceId = customSrc || this.selfNodeId;
+
+    // 1. Point-to-Point Match (Unmodified Native Flow)
+    if (this.connectedPeers.has(destinationId) && sourceId === this.selfNodeId) {
+      console.log(`[MeshManager] Sending payload (${payload.type}) direct to ${this.getDeviceName(destinationId)}`);
+      return PeerConnectionManager.sendMessage(destinationId, payload);
+    }
+    // 2. Relaying (If we are forwarding an already routed packet)
+    else if (this.connectedPeers.has(destinationId)) {
+        console.log(`[MeshManager] Forwarding routed payload to direct connection ${this.getDeviceName(destinationId)}`);
+        return PeerConnectionManager.sendMessage(destinationId, {
+          type: 'ROUTED_PACKET',
+          src: sourceId,
+          dest: destinationId,
+          ttl: ttl,
+          payload
+        });
+    }
+
+    // 3. Multi-Hop Action Required
+    const route = this.routingTable.get(destinationId);
+    if (route && this.connectedPeers.has(route.nextHop)) {
+      console.log(`[MeshManager] Routing payload to ${this.getDeviceName(destinationId)} via hop ${this.getDeviceName(route.nextHop)}`);
+      return PeerConnectionManager.sendMessage(route.nextHop, {
+        type: 'ROUTED_PACKET',
+        src: sourceId,
+        dest: destinationId,
+        ttl: ttl,
+        payload
+      });
+    }
+
+    console.warn(`[MeshManager] No route to ${destinationId}`);
+    return false;
   }
 }
 

@@ -46,6 +46,7 @@ export default function MeshScreen() {
           key: `${deviceId}:${page.hash}`,
           deviceId,
           peerName,
+          via: entry.via,
           hash: page.hash,
           title: page.title,
           url: page.url,
@@ -185,10 +186,14 @@ export default function MeshScreen() {
       progressText = `${Math.min(percent, 99)}%`;
     }
     
+    const relayPeer = item.via ? connectedPeers.find(p => p.deviceId === item.via) : null;
+    const relayName = relayPeer ? (relayPeer.deviceName || relayPeer.deviceId.slice(0,8)) : (item.via ? `Peer-${item.via.slice(0, 8)}` : '');
+    const viaText = item.via ? `\nVia: ${relayName}` : '';
+    
     return (
       <ListItem
         title={item.title}
-        subtitle={`${displayUrl}\nOwner: ${item.peerName}`}
+        subtitle={`${displayUrl}\nOwner: ${item.peerName}${viaText}`}
         icon={<FontAwesome name={item.isPrivate ? "lock" : "file-text-o"} color={item.isPrivate ? theme.accent : null} />}
         rightElement={
           <View style={styles.downloadAction}>
