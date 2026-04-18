@@ -180,63 +180,69 @@ export default function MeshScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <View style={[styles.header, { paddingHorizontal: spacing.xl, marginBottom: spacing.l }]}>
+      <View style={[styles.header, { paddingHorizontal: spacing.xl, marginBottom: spacing.m }]}>
         <Text style={[styles.title, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
-          Nearby Devices
+          Mesh Catalog
         </Text>
-        <Text style={[styles.subtitle, { color: theme.textSecondary, fontSize: typography.bodySmall.fontSize }]}>
-          {nearbyDevices.length} nearby • {connectedPeers.length} connected
-        </Text>
+        <View style={styles.statusRow}>
+            <View style={[styles.statusBadge, { backgroundColor: radioState.scanning ? `${theme.success}15` : theme.card }]}>
+                <View style={[styles.statusDot, { backgroundColor: radioState.scanning ? theme.success : theme.textSecondary }]} />
+                <Text style={[styles.statusText, { color: radioState.scanning ? theme.success : theme.textSecondary }]}>
+                    {radioState.scanning ? 'Scanning Radius' : 'Scanner Idle'}
+                </Text>
+            </View>
+            <Text style={[styles.peerStats, { color: theme.textSecondary }]}>
+                {nearbyDevices.length} Peers in Range
+            </Text>
+        </View>
       </View>
 
-      <View style={[styles.controlsWrap, { marginHorizontal: spacing.xl, gap: spacing.s }]}>
+      <View style={[styles.controlsWrap, { marginHorizontal: spacing.xl, gap: spacing.s, marginBottom: spacing.l }]}>
         <Button
           variant="secondary"
-          title={radioState.scanning ? 'Scanning...' : 'Start Scan'}
-          style={[styles.controlBtn, radioState.scanning && { backgroundColor: `${theme.success}15`, borderColor: theme.success, borderWidth: 1 }]}
-          textStyle={radioState.scanning ? { color: theme.success } : null}
+          title={radioState.scanning ? 'Stop Scanning' : 'Start Scanning'}
+          style={[styles.controlBtn, radioState.scanning && { borderColor: theme.success }]}
           onPress={() => MeshManager.setScanning(!radioState.scanning)}
         />
         <Button
           variant="secondary"
-          title={radioState.advertising ? 'Advertising' : 'Start Adv'}
-          style={[styles.controlBtn, radioState.advertising && { backgroundColor: `${theme.accent}15`, borderColor: theme.accent, borderWidth: 1 }]}
-          textStyle={radioState.advertising ? { color: theme.accent } : null}
+          title={radioState.advertising ? 'Broadcasting' : 'Start Broadcast'}
+          style={[styles.controlBtn, radioState.advertising && { borderColor: theme.accent }]}
           onPress={() => MeshManager.setAdvertising(!radioState.advertising)}
         />
       </View>
 
       {meshWarning ? (
-        <View style={[styles.warningBox, { marginHorizontal: spacing.xl, backgroundColor: isDark ? '#2D2A1E' : '#FFF9E6', borderColor: isDark ? '#5E5431' : '#FFEAB3' }]}>
+        <View style={[styles.warningBox, { marginHorizontal: spacing.xl, backgroundColor: isDark ? '#2D2A1E' : '#FFF9E6', borderColor: isDark ? '#5E5431' : '#FFEAB3', marginBottom: spacing.m }]}>
            <FontAwesome name="warning" size={16} color={isDark ? '#E6B800' : '#856404'} />
            <Text style={[styles.warningText, { color: isDark ? '#E6B800' : '#856404' }]}>{meshWarning}</Text>
         </View>
       ) : null}
 
       <FlatList
-        data={nearbyDevices}
-        renderItem={renderDevice}
-        keyExtractor={(item) => item.deviceId}
-        ListEmptyComponent={<Text style={[styles.emptyText, { color: theme.textSecondary, marginTop: 40 }]}>Looking for nearby devices...</Text>}
-        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 20 }}
-      />
-
-      <View style={[styles.catalogHeader, { paddingHorizontal: spacing.xl }]}>
-        <Text style={[styles.catalogHeaderText, { color: theme.textPrimary, fontSize: typography.headingM.fontSize }]}>
-          Peer Catalog
-        </Text>
-      </View>
-
-      <FlatList
         data={catalogRows}
         renderItem={renderCatalogItem}
         keyExtractor={(item) => item.key}
         ListEmptyComponent={
-          <Card style={styles.emptyCard}>
-            <Text style={[styles.emptyText, { color: theme.textSecondary }]}>Connect to a device to see their available pages.</Text>
-          </Card>
+          <View style={styles.emptyContainer}>
+            {radioState.scanning ? (
+                <>
+                    <ActivityIndicator size="large" color={theme.primary} style={{ marginBottom: spacing.m }} />
+                    <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                    Seeking nearby websites...
+                    </Text>
+                </>
+            ) : (
+                <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                Start scanning to discover content
+                </Text>
+            )}
+            <Text style={[styles.emptySubtext, { color: theme.textSecondary, marginTop: spacing.xs }]}>
+                Websites shared by people within 10-20 meters will appear here.
+            </Text>
+          </View>
         }
-        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingTop: spacing.m, paddingBottom: 40 }}
+        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 60 }}
       />
     </View>
   );
@@ -304,6 +310,48 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     textAlign: 'center',
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  emptySubtext: {
+    textAlign: 'center',
+    fontSize: 12,
+    opacity: 0.7,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 12,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 6,
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  peerStats: {
+    fontSize: 12,
     fontWeight: '500',
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 80,
+    paddingHorizontal: 40,
   },
 });

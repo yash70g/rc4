@@ -9,7 +9,6 @@ import BrowserScreen from '../screens/BrowserScreen';
 import CacheScreen from '../screens/CacheScreen';
 import SearchScreen from '../screens/SearchScreen';
 import MeshScreen from '../screens/MeshScreen';
-import MeshMapScreen from '../screens/MeshMapScreen';
 import ViewerScreen from '../screens/ViewerScreen';
 
 const TABS = [
@@ -18,7 +17,6 @@ const TABS = [
   { key: 'Cache', icon: 'briefcase', component: CacheScreen },
   { key: 'Search', icon: 'search', component: SearchScreen },
   { key: 'Mesh', icon: 'share-alt', component: MeshScreen },
-  { key: 'Map', icon: 'map', component: MeshMapScreen },
 ];
 
 const NavigationContext = React.createContext();
