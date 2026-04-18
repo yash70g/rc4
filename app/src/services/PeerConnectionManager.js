@@ -44,6 +44,7 @@ class PeerConnectionManager {
     this.addressMap = new Map();
     this.incomingBuffers = new Map();
     this.transport = BLETransport;
+    this.onProgress = null; // callback: (deviceId, messageId, current, total) => void
 
     this._wireTransport();
   }
@@ -228,6 +229,11 @@ class PeerConnectionManager {
       try {
         current.chunks[index] = base64Decode(payload);
         current.received += 1;
+        
+        // Report logical progress (segment X of total Y)
+        if (this.onProgress) {
+          this.onProgress(deviceId, messageId, current.received, current.total);
+        }
       } catch (e) {
         console.warn('[PeerConnection] Decode failed for chunk:', e.message);
       }

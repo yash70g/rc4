@@ -33,14 +33,23 @@ class MeshManager {
       this.emit('error', { message, deviceId });
     });
     
-    bleTransport.onProgress = (deviceId, bytes) => {
+    // Smooth Progress: Listen to logical chunks (1 of 400, 2 of 400...)
+    // instead of low-level BLE radio bytes.
+    PeerConnectionManager.onProgress = (deviceId, messageId, current, total) => {
       const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
       const incoming = this.incomingTransfers.get(resolvedId);
+      const hash = incoming?.hash;
+      
+      // Heartbeat: Reset watchdog on every chunk arrival
+      if (hash) {
+        this.startWatchdog(resolvedId, hash);
+      }
+      
       this.emit('transfer-progress', { 
         deviceId: resolvedId, 
-        received: bytes,
-        hash: incoming?.hash,
-        total: incoming?.totalSize
+        received: current,
+        total: total,
+        hash: hash
       });
     };
   }
@@ -303,13 +312,13 @@ class MeshManager {
       case 'TRANSFER_START':
         this.incomingTransfers.set(resolvedId, { 
             hash: data.hash, 
-            totalSize: data.totalSize 
+            totalChunks: data.totalChunks 
         });
         this.emit('transfer-progress', {
           deviceId: resolvedId,
           hash: data.hash,
           received: 0,
-          total: data.totalSize,
+          total: data.totalChunks,
           title: data.title
         });
         break;
@@ -347,7 +356,12 @@ class MeshManager {
   }
 
   requestPage(deviceId, hash) {
-    // Start Watchdog Timer (15 seconds)
+    this.startWatchdog(deviceId, hash);
+    return PeerConnectionManager.sendMessage(deviceId, { type: 'REQUEST_PAGE', hash });
+  }
+
+  startWatchdog(deviceId, hash) {
+    // Clear any existing timer for this hash
     if (this.activeRequests.has(hash)) {
         clearTimeout(this.activeRequests.get(hash));
     }
@@ -361,11 +375,9 @@ class MeshManager {
                 message: 'Request Timed Out: Peer is unresponsive or out of range.'
             });
         }
-    }, 15000);
+    }, 15000); // 15s absolute silence timeout
 
     this.activeRequests.set(hash, timerId);
-
-    return PeerConnectionManager.sendMessage(deviceId, { type: 'REQUEST_PAGE', hash });
   }
 
   async sendCatalog(deviceId) {
@@ -421,11 +433,22 @@ class MeshManager {
       return;
     }
     
+    // Calculate total logical chunks (150 bytes each)
+    const rawPayload = JSON.stringify({
+      type: 'PAGE_DATA',
+      hash: page.hash,
+      html: page.html,
+      title: page.title,
+      url: page.url,
+      assets: [],
+    });
+    const totalChunks = Math.ceil(rawPayload.length / 150);
+
     // Announce transfer start for progress tracking
     await PeerConnectionManager.sendMessage(deviceId, {
         type: 'TRANSFER_START',
         hash: page.hash,
-        totalSize: page.html.length,
+        totalChunks: totalChunks,
         title: page.title
     });
 
