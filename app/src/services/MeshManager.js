@@ -13,6 +13,8 @@ class MeshManager {
     this.peerCatalogs = new Map();
     this.bleIdMap = new Map(); // bleDeviceId → deviceId
     this.pendingRequests = new Map(); // hash → Set(deviceId)
+    this.activeRequests = new Map(); // hash → timerId
+    this.incomingTransfers = new Map(); // deviceId → { hash, totalSize }
     this.started = false;
 
     BLEManager.on('deviceFound', this.handleDeviceFound.bind(this));
@@ -29,6 +31,17 @@ class MeshManager {
     PeerConnectionManager.on('error', ({ message, deviceId }) => {
       this.emit('error', { message, deviceId });
     });
+
+    BLETransport.onProgress = (deviceId, bytes) => {
+      const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
+      const incoming = this.incomingTransfers.get(resolvedId);
+      this.emit('transfer-progress', { 
+        deviceId: resolvedId, 
+        received: bytes,
+        hash: incoming?.hash,
+        total: incoming?.totalSize
+      });
+    };
   }
 
   on(event, callback) {
@@ -75,6 +88,10 @@ class MeshManager {
     this.nearbyDevices.clear();
     this.connectedPeers.clear();
     this.peerCatalogs.clear();
+    
+    // Clear any active timeouts
+    this.activeRequests.forEach(timerId => clearTimeout(timerId));
+    this.activeRequests.clear();
 
     this.emit('nearby-devices-update', []);
     this.emit('connected-peers-update', []);
@@ -167,7 +184,9 @@ class MeshManager {
 
   handleDeviceLost(device) {
     this.nearbyDevices.delete(device.deviceId);
+    this.peerCatalogs.delete(device.deviceId); // PURGE stale catalog
     this.emit('nearby-devices-update', this.getNearbyDevices());
+    this.emit('catalog-update', { deviceId: device.deviceId, pages: [] });
     this.emit('mesh-state', this.getNetworkStats());
   }
 
@@ -230,6 +249,16 @@ class MeshManager {
       case 'PAGE_DATA':
         if (data.hash && data.url && data.title && typeof data.html === 'string') {
           await CacheManager.storeMeshContent(data.hash, data.url, data.title, data.html);
+          
+          this.incomingTransfers.delete(resolvedId);
+
+          // Clear watchdog timer
+          const timerId = this.activeRequests.get(data.hash);
+          if (timerId) {
+            clearTimeout(timerId);
+            this.activeRequests.delete(data.hash);
+          }
+
           await this.refreshAdvertisingMetadata();
           this.emit('page-received', {
             hash: data.hash,
@@ -248,6 +277,13 @@ class MeshManager {
         break;
 
       case 'PERMISSION_DENIED':
+        // Clear watchdog timer
+        const denyTimerId = this.activeRequests.get(data.hash);
+        if (denyTimerId) {
+          clearTimeout(denyTimerId);
+          this.activeRequests.delete(data.hash);
+        }
+
         this.emit('error', {
           deviceId,
           hash: data.hash,
@@ -260,6 +296,20 @@ class MeshManager {
           deviceId,
           hash: data.hash,
           message: `Peer could not find content for hash: ${data.hash}`,
+        });
+        break;
+
+      case 'TRANSFER_START':
+        this.incomingTransfers.set(resolvedId, { 
+            hash: data.hash, 
+            totalSize: data.totalSize 
+        });
+        this.emit('transfer-progress', {
+          deviceId: resolvedId,
+          hash: data.hash,
+          received: 0,
+          total: data.totalSize,
+          title: data.title
         });
         break;
 
@@ -296,6 +346,24 @@ class MeshManager {
   }
 
   requestPage(deviceId, hash) {
+    // Start Watchdog Timer (15 seconds)
+    if (this.activeRequests.has(hash)) {
+        clearTimeout(this.activeRequests.get(hash));
+    }
+
+    const timerId = setTimeout(() => {
+        if (this.activeRequests.has(hash)) {
+            this.activeRequests.delete(hash);
+            this.emit('error', {
+                deviceId,
+                hash,
+                message: 'Request Timed Out: Peer is unresponsive or out of range.'
+            });
+        }
+    }, 15000);
+
+    this.activeRequests.set(hash, timerId);
+
     return PeerConnectionManager.sendMessage(deviceId, { type: 'REQUEST_PAGE', hash });
   }
 
@@ -351,6 +419,14 @@ class MeshManager {
       });
       return;
     }
+    
+    // Announce transfer start for progress tracking
+    await PeerConnectionManager.sendMessage(deviceId, {
+        type: 'TRANSFER_START',
+        hash: page.hash,
+        totalSize: page.html.length,
+        title: page.title
+    });
 
     PeerConnectionManager.sendMessage(deviceId, {
       type: 'PAGE_DATA',

@@ -20,6 +20,7 @@ export default function MeshScreen() {
   const [connectedPeers, setConnectedPeers] = useState([]);
   const [catalogRows, setCatalogRows] = useState([]);
   const [downloadingHashes, setDownloadingHashes] = useState({});
+  const [transferProgress, setTransferProgress] = useState({}); // hash -> { received, total }
   const [radioState, setRadioState] = useState({ scanning: false, advertising: false });
   const [meshWarning, setMeshWarning] = useState('');
 
@@ -67,11 +68,21 @@ export default function MeshScreen() {
         delete next[hash];
         return next;
       });
+      setTransferProgress((prev) => {
+        const next = { ...prev };
+        delete next[hash];
+        return next;
+      });
       Alert.alert('Page Received', `Downloaded "${title}" into local cache.`);
     };
     const onError = ({ message, hash }) => {
       if (hash) {
         setDownloadingHashes((prev) => {
+          const next = { ...prev };
+          delete next[hash];
+          return next;
+        });
+        setTransferProgress((prev) => {
           const next = { ...prev };
           delete next[hash];
           return next;
@@ -88,12 +99,20 @@ export default function MeshScreen() {
     const onPermissionPending = ({ hash }) => {
       setDownloadingHashes((prev) => ({ ...prev, [hash]: 'pending' }));
     };
+    const onTransferProgress = ({ hash, received, total }) => {
+      if (!hash) return;
+      setTransferProgress((prev) => ({
+        ...prev,
+        [hash]: { received, total: total || prev[hash]?.total || 0 }
+      }));
+    };
 
     MeshManager.on('nearby-devices-update', onNearby);
     MeshManager.on('connected-peers-update', onConnected);
     MeshManager.on('catalog-update', onCatalog);
     MeshManager.on('page-received', onPageReceived);
     MeshManager.on('permission-pending', onPermissionPending);
+    MeshManager.on('transfer-progress', onTransferProgress);
     MeshManager.on('error', onError);
     MeshManager.on('warning', onWarning);
     MeshManager.on('mesh-radio-state', onRadioState);
@@ -106,6 +125,7 @@ export default function MeshScreen() {
       MeshManager.off('catalog-update', onCatalog);
       MeshManager.off('page-received', onPageReceived);
       MeshManager.off('permission-pending', onPermissionPending);
+      MeshManager.off('transfer-progress', onTransferProgress);
       MeshManager.off('error', onError);
       MeshManager.off('warning', onWarning);
       MeshManager.off('mesh-radio-state', onRadioState);
@@ -152,18 +172,26 @@ export default function MeshScreen() {
     );
   }
 
-  function renderCatalogItem({ item }) {
-    const downloadState = downloadingHashes[item.hash];
-    const loading = downloadState === true;
-    const pending = downloadState === 'pending';
-    const displayUrl = item.url.length > 35 ? item.url.substring(0, 32) + '...' : item.url;
-    
-    return (
-      <ListItem
-        title={item.title}
-        subtitle={`${displayUrl}\nOwner: ${item.peerName}`} // Added Peer Name
-        icon={<FontAwesome name={item.isPrivate ? "lock" : "file-text-o"} color={item.isPrivate ? theme.accent : null} />}
-        rightElement={
+  const downloadState = downloadingHashes[item.hash];
+  const progress = transferProgress[item.hash];
+  const loading = downloadState === true;
+  const pending = downloadState === 'pending';
+  const displayUrl = item.url.length > 35 ? item.url.substring(0, 32) + '...' : item.url;
+
+  let progressText = "";
+  if (loading && progress && progress.total > 0) {
+    const percent = Math.round((progress.received / progress.total) * 100);
+    progressText = `${Math.min(percent, 99)}%`;
+  }
+
+  return (
+    <ListItem
+      title={item.title}
+      subtitle={`${displayUrl}\nOwner: ${item.peerName}`} // Added Peer Name
+      icon={<FontAwesome name={item.isPrivate ? "lock" : "file-text-o"} color={item.isPrivate ? theme.accent : null} />}
+      rightElement={
+        <View style={styles.downloadAction}>
+          {loading && <Text style={[styles.progressText, { color: theme.primary }]}>{progressText}</Text>}
           <Button
             variant="ghost"
             title={pending ? "Waiting..." : ""}
@@ -171,81 +199,83 @@ export default function MeshScreen() {
             onPress={() => handleDownload(item)}
             disabled={loading || pending}
             textStyle={{ fontSize: 10, color: theme.textSecondary }}
+            style={styles.downloadBtn}
           />
-        }
-      />
-    );
-  }
-
-  return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <View style={[styles.header, { paddingHorizontal: spacing.xl, marginBottom: spacing.m }]}>
-        <Text style={[styles.title, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
-          Mesh Catalog
-        </Text>
-        <View style={styles.statusRow}>
-            <View style={[styles.statusBadge, { backgroundColor: radioState.scanning ? `${theme.success}15` : theme.card }]}>
-                <View style={[styles.statusDot, { backgroundColor: radioState.scanning ? theme.success : theme.textSecondary }]} />
-                <Text style={[styles.statusText, { color: radioState.scanning ? theme.success : theme.textSecondary }]}>
-                    {radioState.scanning ? 'Scanning Radius' : 'Scanner Idle'}
-                </Text>
-            </View>
-            <Text style={[styles.peerStats, { color: theme.textSecondary }]}>
-                {nearbyDevices.length} Peers in Range
-            </Text>
         </View>
-      </View>
-
-      <View style={[styles.controlsWrap, { marginHorizontal: spacing.xl, gap: spacing.s, marginBottom: spacing.l }]}>
-        <Button
-          variant="secondary"
-          title={radioState.scanning ? 'Stop Scanning' : 'Start Scanning'}
-          style={[styles.controlBtn, radioState.scanning && { borderColor: theme.success }]}
-          onPress={() => MeshManager.setScanning(!radioState.scanning)}
-        />
-        <Button
-          variant="secondary"
-          title={radioState.advertising ? 'Broadcasting' : 'Start Broadcast'}
-          style={[styles.controlBtn, radioState.advertising && { borderColor: theme.accent }]}
-          onPress={() => MeshManager.setAdvertising(!radioState.advertising)}
-        />
-      </View>
-
-      {meshWarning ? (
-        <View style={[styles.warningBox, { marginHorizontal: spacing.xl, backgroundColor: isDark ? '#2D2A1E' : '#FFF9E6', borderColor: isDark ? '#5E5431' : '#FFEAB3', marginBottom: spacing.m }]}>
-           <FontAwesome name="warning" size={16} color={isDark ? '#E6B800' : '#856404'} />
-           <Text style={[styles.warningText, { color: isDark ? '#E6B800' : '#856404' }]}>{meshWarning}</Text>
-        </View>
-      ) : null}
-
-      <FlatList
-        data={catalogRows}
-        renderItem={renderCatalogItem}
-        keyExtractor={(item) => item.key}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            {radioState.scanning ? (
-                <>
-                    <ActivityIndicator size="large" color={theme.primary} style={{ marginBottom: spacing.m }} />
-                    <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                    Seeking nearby websites...
-                    </Text>
-                </>
-            ) : (
-                <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                Start scanning to discover content
-                </Text>
-            )}
-            <Text style={[styles.emptySubtext, { color: theme.textSecondary, marginTop: spacing.xs }]}>
-                Websites shared by people within 10-20 meters will appear here.
-            </Text>
-          </View>
-        }
-        contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 60 }}
-      />
-    </View>
+      }
+    />
   );
 }
+
+return (
+  <View style={[styles.container, { backgroundColor: theme.background }]}>
+    <View style={[styles.header, { paddingHorizontal: spacing.xl, marginBottom: spacing.m }]}>
+      <Text style={[styles.title, { color: theme.textPrimary, fontSize: typography.headingL.fontSize }]}>
+        Mesh Catalog
+      </Text>
+      <View style={styles.statusRow}>
+        <View style={[styles.statusBadge, { backgroundColor: radioState.scanning ? `${theme.success}15` : theme.card }]}>
+          <View style={[styles.statusDot, { backgroundColor: radioState.scanning ? theme.success : theme.textSecondary }]} />
+          <Text style={[styles.statusText, { color: radioState.scanning ? theme.success : theme.textSecondary }]}>
+            {radioState.scanning ? 'Scanning Radius' : 'Scanner Idle'}
+          </Text>
+        </View>
+        <Text style={[styles.peerStats, { color: theme.textSecondary }]}>
+          {nearbyDevices.length} Peers in Range
+        </Text>
+      </View>
+    </View>
+
+    <View style={[styles.controlsWrap, { marginHorizontal: spacing.xl, gap: spacing.s, marginBottom: spacing.l }]}>
+      <Button
+        variant="secondary"
+        title={radioState.scanning ? 'Stop Scanning' : 'Start Scanning'}
+        style={[styles.controlBtn, radioState.scanning && { borderColor: theme.success }]}
+        onPress={() => MeshManager.setScanning(!radioState.scanning)}
+      />
+      <Button
+        variant="secondary"
+        title={radioState.advertising ? 'Broadcasting' : 'Start Broadcast'}
+        style={[styles.controlBtn, radioState.advertising && { borderColor: theme.accent }]}
+        onPress={() => MeshManager.setAdvertising(!radioState.advertising)}
+      />
+    </View>
+
+    {meshWarning ? (
+      <View style={[styles.warningBox, { marginHorizontal: spacing.xl, backgroundColor: isDark ? '#2D2A1E' : '#FFF9E6', borderColor: isDark ? '#5E5431' : '#FFEAB3', marginBottom: spacing.m }]}>
+        <FontAwesome name="warning" size={16} color={isDark ? '#E6B800' : '#856404'} />
+        <Text style={[styles.warningText, { color: isDark ? '#E6B800' : '#856404' }]}>{meshWarning}</Text>
+      </View>
+    ) : null}
+
+    <FlatList
+      data={catalogRows}
+      renderItem={renderCatalogItem}
+      keyExtractor={(item) => item.key}
+      ListEmptyComponent={
+        <View style={styles.emptyContainer}>
+          {radioState.scanning ? (
+            <>
+              <ActivityIndicator size="large" color={theme.primary} style={{ marginBottom: spacing.m }} />
+              <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+                Seeking nearby websites...
+              </Text>
+            </>
+          ) : (
+            <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
+              Start scanning to discover content
+            </Text>
+          )}
+          <Text style={[styles.emptySubtext, { color: theme.textSecondary, marginTop: spacing.xs }]}>
+            Websites shared by people within 10-20 meters will appear here.
+          </Text>
+        </View>
+      }
+      contentContainerStyle={{ paddingHorizontal: spacing.xl, paddingBottom: 60 }}
+    />
+  </View>
+);
+
 
 const styles = StyleSheet.create({
   container: {
@@ -352,5 +382,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 80,
     paddingHorizontal: 40,
+  },
+  downloadAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  downloadBtn: {
+    minWidth: 40,
+  },
+  progressText: {
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: 'monospace',
   },
 });

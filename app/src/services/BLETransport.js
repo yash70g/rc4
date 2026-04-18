@@ -50,6 +50,7 @@ class BLETransport {
     this.onFrameReceived = null; // callback: (deviceId, frame) => void
     this.onConnectionStateChange = null;
     this.onError = null;
+    this.onProgress = null; // callback: (deviceId, receivedBytes) => void
     this.peripheralSubscriptions = [];
     this.peerSessionMeta = new Map(); // deviceId → { chunkSize, maxSafeSize, successCount, isLocked }
 
@@ -308,6 +309,11 @@ class BLETransport {
 
     let buffer = this.incomingBuffers.get(deviceId) || '';
     buffer += chunk;
+    
+    // Report progress
+    if (this.onProgress) {
+        this.onProgress(deviceId, buffer.length);
+    }
 
     // Check for complete messages (delimited by CHUNK_START and CHUNK_END)
     while (true) {
