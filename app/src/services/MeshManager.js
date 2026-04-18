@@ -254,6 +254,14 @@ class MeshManager {
     } else {
       this.connectedPeers.delete(resolvedId);
       this.peerCatalogs.delete(resolvedId);
+      
+      // Clean up any proxied catalogs that depended on this disconnected peer
+      for (const [nodeId, entry] of this.peerCatalogs.entries()) {
+        if (entry.via === resolvedId) {
+          this.peerCatalogs.delete(nodeId);
+          this.routingTable.delete(nodeId);
+        }
+      }
     }
 
     this.emit('connected-peers-update', this.getConnectedPeers());
