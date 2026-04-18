@@ -31,8 +31,12 @@ const SERVICE_UUID = 'CAFE0001-C0DE-FACE-B00C-CAFE01234567';
 const RX_CHAR_UUID = 'CAFE0002-C0DE-FACE-B00C-CAFE01234567';
 const TX_CHAR_UUID = 'CAFE0003-C0DE-FACE-B00C-CAFE01234567';
 
-// BLE chunk size — 150 matches the multiplexer to ensure single-packet atomic delivery
-const BLE_CHUNK_SIZE = 150;
+// BLE chunking constants for Adaptive Throughput (Congestion Control)
+const INITIAL_CHUNK_SIZE = 180;
+const MAX_CHUNK_SIZE = 512;
+const STEP_SIZE = 32;
+const BACKOFF_SIZE = 48;
+const SUCCESSES_BEFORE_STEP = 3;
 
 // Delimiter for BLE-level chunk framing
 const CHUNK_START = '---RC-START---';
@@ -47,6 +51,7 @@ class BLETransport {
     this.onConnectionStateChange = null;
     this.onError = null;
     this.peripheralSubscriptions = [];
+    this.peerSessionMeta = new Map(); // deviceId → { chunkSize, maxSafeSize, successCount, isLocked }
 
     this._initBleManager();
     this._initPeripheralListeners();
@@ -198,6 +203,7 @@ class BLETransport {
       }
       this.connectedDevices.delete(deviceId);
       this.incomingBuffers.delete(deviceId);
+      this.peerSessionMeta.delete(deviceId);
     }
   }
 
@@ -216,7 +222,7 @@ class BLETransport {
     // Path 1: We're connected as Central to this device
     const conn = this.connectedDevices.get(deviceId);
     if (conn) {
-      await this._writeChunked(conn.rxChar, framedPayload);
+      await this._writeChunked(conn.rxChar, framedPayload, deviceId);
       return;
     }
 
@@ -237,29 +243,58 @@ class BLETransport {
 
   /**
    * Write data in BLE-sized chunks to a characteristic (Central → Peripheral).
+   * Implements adaptive sizing (TCP Tahoe-style probing).
    */
-  async _writeChunked(rxChar, data) {
-    const chunks = this._chunkString(data, BLE_CHUNK_SIZE);
-    for (const chunk of chunks) {
+  async _writeChunked(rxChar, data, deviceId) {
+    let offset = 0;
+    while (offset < data.length) {
+      const currentSize = this._getPeerChunkSize(deviceId);
+      const chunk = data.substring(offset, offset + currentSize);
       const encoded = this._base64encode(chunk);
-      await rxChar.writeWithoutResponse(encoded);
-      // Larger delay between chunks to give Android BLE stack time to process
-      if (chunks.length > 1) {
-        await this._delay(60);
+
+      try {
+        await rxChar.writeWithoutResponse(encoded);
+        this._reportPeerSuccess(deviceId);
+        offset += chunk.length;
+        
+        // Dynamic delay based on data volume
+        if (offset < data.length) {
+          await this._delay(60);
+        }
+      } catch (e) {
+        if (e.message?.includes('length') || e.message?.includes('MTU')) {
+          this._reportPeerFailure(deviceId);
+          // Don't advance offset, retry with smaller size
+        } else {
+          throw e; // Critical error (disconnect, etc)
+        }
       }
     }
   }
 
   /**
    * Send data in BLE-sized chunks as notifications (Peripheral → Central).
+   * Implements adaptive sizing.
    */
   async _sendNotificationChunked(centralId, data) {
     if (!ExoBlePeripheral) return;
-    const chunks = this._chunkString(data, BLE_CHUNK_SIZE);
-    for (const chunk of chunks) {
-      await ExoBlePeripheral.sendNotification(centralId, chunk);
-      if (chunks.length > 1) {
-        await this._delay(60);
+    
+    let offset = 0;
+    while (offset < data.length) {
+      const currentSize = this._getPeerChunkSize(centralId);
+      const chunk = data.substring(offset, offset + currentSize);
+      
+      try {
+        await ExoBlePeripheral.sendNotification(centralId, chunk);
+        this._reportPeerSuccess(centralId);
+        offset += chunk.length;
+
+        if (offset < data.length) {
+          await this._delay(60);
+        }
+      } catch (e) {
+        this._reportPeerFailure(centralId);
+        // Retry logic for peripheral side
       }
     }
   }
@@ -334,6 +369,48 @@ class BLETransport {
     this.incomingBuffers.set(deviceId, buffer);
   }
 
+  // ── Adaptive Throughput Logic ────────────────────────────────
+
+  _getPeerChunkSize(deviceId) {
+    const meta = this.peerSessionMeta.get(deviceId);
+    if (!meta) {
+      const initial = {
+        chunkSize: INITIAL_CHUNK_SIZE,
+        maxSafeSize: MAX_CHUNK_SIZE,
+        successCount: 0,
+        isLocked: false
+      };
+      this.peerSessionMeta.set(deviceId, initial);
+      return INITIAL_CHUNK_SIZE;
+    }
+    return meta.chunkSize;
+  }
+
+  _reportPeerSuccess(deviceId) {
+    const meta = this.peerSessionMeta.get(deviceId);
+    if (!meta || meta.isLocked || meta.chunkSize >= meta.maxSafeSize) return;
+
+    meta.successCount++;
+    if (meta.successCount >= SUCCESSES_BEFORE_STEP) {
+      meta.successCount = 0;
+      const nextSize = Math.min(meta.chunkSize + STEP_SIZE, meta.maxSafeSize);
+      console.log(`[BLETransport] Throughput increase for ${deviceId}: ${meta.chunkSize} -> ${nextSize}`);
+      meta.chunkSize = nextSize;
+    }
+  }
+
+  _reportPeerFailure(deviceId) {
+    const meta = this.peerSessionMeta.get(deviceId);
+    if (!meta) return;
+
+    const oldSize = meta.chunkSize;
+    meta.maxSafeSize = Math.max(oldSize - BACKOFF_SIZE, INITIAL_CHUNK_SIZE);
+    meta.chunkSize = meta.maxSafeSize;
+    meta.isLocked = true;
+    meta.successCount = 0;
+    console.warn(`[BLETransport] Throughput back-off for ${deviceId}: ${oldSize} -> ${meta.chunkSize} (LOCKED)`);
+  }
+
   // ── Utilities ────────────────────────────────────────────────
 
   _chunkString(str, size) {
@@ -390,6 +467,7 @@ class BLETransport {
     }
     this.connectedDevices.clear();
     this.incomingBuffers.clear();
+    this.peerSessionMeta.clear();
   }
 }
 
