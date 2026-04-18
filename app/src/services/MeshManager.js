@@ -1,4 +1,5 @@
 import BLEManager from './BLEManager';
+import bleTransport from './BLETransport';
 import PeerConnectionManager from './PeerConnectionManager';
 import * as CacheManager from './CacheManager';
 
@@ -31,8 +32,8 @@ class MeshManager {
     PeerConnectionManager.on('error', ({ message, deviceId }) => {
       this.emit('error', { message, deviceId });
     });
-
-    BLETransport.onProgress = (deviceId, bytes) => {
+    
+    bleTransport.onProgress = (deviceId, bytes) => {
       const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
       const incoming = this.incomingTransfers.get(resolvedId);
       this.emit('transfer-progress', { 
