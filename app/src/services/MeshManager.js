@@ -137,13 +137,14 @@ class MeshManager {
   }
 
   getPeerCatalog(deviceId) {
-    return this.peerCatalogs.get(deviceId) || [];
+    const entry = this.peerCatalogs.get(deviceId);
+    return entry ? entry.pages : [];
   }
 
   getPeerCatalogs() {
     const out = {};
-    this.peerCatalogs.forEach((pages, deviceId) => {
-      out[deviceId] = pages;
+    this.peerCatalogs.forEach((entry, deviceId) => {
+      out[deviceId] = entry; // entry is { deviceName, pages }
     });
     return out;
   }
@@ -214,7 +215,10 @@ class MeshManager {
             }
         }
 
-        this.peerCatalogs.set(resolvedId, Array.isArray(data.pages) ? data.pages : []);
+        this.peerCatalogs.set(resolvedId, {
+            deviceName: data.deviceName || `Peer-${resolvedId.slice(0, 8)}`,
+            pages: Array.isArray(data.pages) ? data.pages : []
+        });
         this.emit('catalog-update', { deviceId: resolvedId, pages: this.getPeerCatalog(resolvedId) });
         this.emit('mesh-state', this.getNetworkStats());
         break;
@@ -383,8 +387,9 @@ class MeshManager {
     const results = [];
     const seen = new Set();
 
-    for (const [deviceId, catalog] of this.peerCatalogs.entries()) {
-      for (const page of catalog) {
+    for (const [deviceId, entry] of this.peerCatalogs.entries()) {
+      const { pages } = entry;
+      for (const page of pages) {
         const title = (page.title || '').toLowerCase();
         const url = (page.url || '').toLowerCase();
         if (title.includes(q) || url.includes(q)) {
@@ -401,8 +406,9 @@ class MeshManager {
 
   getNetworkStats() {
     const uniquePeerHashes = new Set();
-    this.peerCatalogs.forEach((catalog) => {
-      catalog.forEach((item) => {
+    this.peerCatalogs.forEach((entry) => {
+      const { pages } = entry;
+      pages.forEach((item) => {
         if (item?.hash) uniquePeerHashes.add(item.hash);
       });
     });

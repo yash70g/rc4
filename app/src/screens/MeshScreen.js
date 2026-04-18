@@ -36,10 +36,9 @@ export default function MeshScreen() {
     setConnectedPeers(connected);
 
     const rows = [];
-    Object.entries(catalogs).forEach(([deviceId, pages]) => {
-      const peer = connectedPeers.find(p => p.deviceId === deviceId) || 
-                   nearbyDevices.find(p => p.deviceId === deviceId);
-      const peerName = peer?.deviceName || `Peer-${deviceId.slice(0, 8)}`;
+    Object.entries(catalogs).forEach(([deviceId, entry]) => {
+      const { deviceName, pages } = entry;
+      const peerName = deviceName || `Peer-${deviceId.slice(0, 8)}`;
 
       pages.forEach((page) => {
         rows.push({
