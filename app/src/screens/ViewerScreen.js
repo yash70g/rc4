@@ -7,10 +7,13 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { Ionicons } from '@expo/vector-icons';
+import { FontAwesome } from '@expo/vector-icons';
+import { useTheme } from '../theme/ThemeContext';
+import Button from '../components/Button';
 import * as CacheManager from '../services/CacheManager';
 
 export default function ViewerScreen({ route, navigation }) {
+  const { theme, spacing, typography, isDark } = useTheme();
   const { hash } = route.params;
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -37,38 +40,41 @@ export default function ViewerScreen({ route, navigation }) {
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#6c63ff" />
-        <Text style={styles.loadingText}>Loading from cache...</Text>
+      <View style={[styles.center, { backgroundColor: theme.background }]}>
+        <ActivityIndicator size="large" color={theme.primary} />
+        <Text style={[styles.loadingText, { color: theme.textSecondary }]}>Retrieving Page...</Text>
       </View>
     );
   }
 
   if (error) {
     return (
-      <View style={styles.center}>
-        <Ionicons name="alert-circle-outline" size={48} color="#ff4444" />
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
-          <Text style={styles.backBtnText}>Go Back</Text>
-        </TouchableOpacity>
+      <View style={[styles.center, { backgroundColor: theme.background }]}>
+        <FontAwesome name="exclamation-circle" size={56} color={theme.error} />
+        <Text style={[styles.errorText, { color: theme.textPrimary }]}>{error}</Text>
+        <Button
+          variant="secondary"
+          title="Go Back"
+          onPress={() => navigation.goBack()}
+          style={{ width: 140, marginTop: 12 }}
+        />
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: theme.card, borderBottomColor: theme.border }]}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
-          <Ionicons name="arrow-back" size={22} color="#fff" />
+          <FontAwesome name="chevron-left" size={20} color={theme.textPrimary} />
         </TouchableOpacity>
         <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+          <Text style={[styles.headerTitle, { color: theme.textPrimary }]} numberOfLines={1}>
             {content.title}
           </Text>
-          <Text style={styles.headerUrl} numberOfLines={1}>
-            📦 Cached • {content.source === 'mesh' ? '🔗 From Mesh' : '📱 Local'}
+          <Text style={[styles.headerUrl, { color: theme.textSecondary }]} numberOfLines={1}>
+             {content.source === 'mesh' ? '🔗 MESH NETWORK' : '📱 LOCAL CACHE'}
           </Text>
         </View>
       </View>
@@ -76,17 +82,16 @@ export default function ViewerScreen({ route, navigation }) {
       {/* Sandboxed WebView */}
       <WebView
         source={{ html: content.html }}
-        style={styles.webview}
+        style={[styles.webview, { backgroundColor: '#FFFFFF' }]}
         javaScriptEnabled={true}
         scrollEnabled={true}
         startInLoadingState={true}
         renderLoading={() => (
-          <View style={styles.webviewLoading}>
-            <ActivityIndicator size="large" color="#6c63ff" />
+          <View style={[styles.webviewLoading, { backgroundColor: theme.background }]}>
+            <ActivityIndicator size="large" color={theme.primary} />
           </View>
         )}
         onShouldStartLoadWithRequest={(event) => {
-          // Block external navigation — sandbox mode
           if (event.url === 'about:blank' || event.url.startsWith('data:')) return true;
           return false;
         }}
@@ -96,41 +101,36 @@ export default function ViewerScreen({ route, navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0d0d1a' },
+  container: { flex: 1 },
   center: {
     flex: 1,
-    backgroundColor: '#0d0d1a',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 12,
+    padding: 40,
   },
-  loadingText: { color: '#888', fontSize: 14 },
-  errorText: { color: '#ff4444', fontSize: 14, textAlign: 'center', paddingHorizontal: 40 },
-  backBtn: {
-    backgroundColor: '#6c63ff',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
-    marginTop: 8,
-  },
-  backBtnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  loadingText: { marginTop: 16, fontSize: 14, fontWeight: '500' },
+  errorText: { fontSize: 15, fontWeight: '600', textAlign: 'center', marginBottom: 8, lineHeight: 22 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 50,
+    paddingTop: 60,
     paddingHorizontal: 16,
-    paddingBottom: 12,
-    backgroundColor: '#1a1a2e',
+    paddingBottom: 16,
+    borderBottomWidth: 1,
     gap: 12,
   },
-  headerBtn: { padding: 4 },
+  headerBtn: { 
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   headerInfo: { flex: 1 },
-  headerTitle: { fontSize: 16, fontWeight: '700', color: '#fff' },
-  headerUrl: { fontSize: 11, color: '#888', marginTop: 2 },
-  webview: { flex: 1, backgroundColor: '#fff' },
+  headerTitle: { fontSize: 16, fontWeight: '700' },
+  headerUrl: { fontSize: 10, fontWeight: '700', marginTop: 2, letterSpacing: 0.5 },
+  webview: { flex: 1 },
   webviewLoading: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#0d0d1a',
     justifyContent: 'center',
     alignItems: 'center',
   },

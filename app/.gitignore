@@ -24,6 +24,8 @@ node_modules/
 .expo/
 android/
 ios/
+!modules/**/android/
+!modules/**/ios/
 *.log
 
 # YOUR ISSUE
@@ -44,7 +46,15 @@ yarn-error.*
 *.tsbuildinfo
 
 # generated native folders
-/ios
-/android
+!/modules/**/ios/
+!/modules/**/android/
+
+# Ignore build artifacts in modules
+modules/**/android/build/
+modules/**/ios/build/
+modules/**/.cxx/
+modules/**/.gradle/
+modules/**/bin/
+modules/**/obj/
 
 package-lock.json

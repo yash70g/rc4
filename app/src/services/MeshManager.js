@@ -1,458 +1,717 @@
-import { io } from 'socket.io-client';
+import BLEManager from './BLEManager';
+import bleTransport from './BLETransport';
+import PeerConnectionManager from './PeerConnectionManager';
 import * as CacheManager from './CacheManager';
 
-// ─── Multi-Relay Mesh Manager ────────────────────────────────────────
-// Each device can connect to MULTIPLE relay nodes simultaneously.
-// Content and catalogs propagate through whichever relays are available.
-// If one relay goes down, the mesh still works through others.
+// Maps BLE hardware address ↔ logical device ID
+// Needed because scanning gives us deviceId but BLE transport uses bleDeviceId
 
-let relays = {};      // url -> socket instance
-let myPeerId = null;
-let myDeviceName = 'Device';
-let listeners = {};
+class MeshManager {
+  constructor() {
+    this.listeners = {};
+    this.nearbyDevices = new Map();
+    this.connectedPeers = new Map();
+    this.peerCatalogs = new Map();
+    this.bleIdMap = new Map(); // bleDeviceId → deviceId
+    this.pendingRequests = new Map(); // hash → Set(deviceId)
+    this.activeRequests = new Map(); // hash → timerId
+    this.incomingTransfers = new Map(); // deviceId → { hash, totalSize }
+    this.started = false;
+    this.selfNodeId = null;
+    this.routingTable = new Map(); // nodeId -> { nextHop, distance, timestamp }
 
-// Mesh state (aggregated from ALL relays)
-let meshPeers = {};   // peerId -> { deviceName, catalog, relayUrl }
-let meshStats = { totalPages: 0, totalDevices: 0 };
+    BLEManager.on('deviceFound', this.handleDeviceFound.bind(this));
+    BLEManager.on('deviceUpdated', this.handleDeviceFound.bind(this));
+    BLEManager.on('deviceLost', this.handleDeviceLost.bind(this));
+    BLEManager.on('scan-state', this.handleScanStateChange.bind(this));
+    BLEManager.on('advertising-state', this.handleAdvertisingStateChange.bind(this));
+    BLEManager.on('warning', ({ message }) => {
+      this.emit('warning', { message });
+    });
 
-// Peer history (tracks inactive peers too)
-let peerHistory = {};  // peerId -> { deviceName, active, lastSeen, relayUrl }
-
-// Content transfer buffer
-const contentBuffer = {};
-
-// ─── Event System ────────────────────────────────────────────────────
-
-export function on(event, callback) {
-  if (!listeners[event]) listeners[event] = [];
-  listeners[event].push(callback);
-}
-
-export function off(event, callback) {
-  if (!listeners[event]) return;
-  listeners[event] = listeners[event].filter((cb) => cb !== callback);
-}
-
-function emit(event, data) {
-  if (!listeners[event]) return;
-  listeners[event].forEach((cb) => cb(data));
-}
-
-// ─── Peer ID ─────────────────────────────────────────────────────────
-
-function generatePeerId() {
-  return 'rc-' + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
-}
-
-export function getPeerId() {
-  return myPeerId;
-}
-
-// ─── Connect to a Relay Node ─────────────────────────────────────────
-// Can be called MULTIPLE times to connect to different relay nodes.
-// Each relay extends the mesh — the more relays, the more resilient.
-
-export function connect(serverUrl, deviceName = 'My Device') {
-  if (!myPeerId) myPeerId = generatePeerId();
-  myDeviceName = deviceName;
-
-  // Already connected to this relay?
-  if (relays[serverUrl]?.connected) {
-    console.log(`[Mesh] Already connected to ${serverUrl}`);
-    return;
+    PeerConnectionManager.onMessage(this.handleMessage.bind(this));
+    PeerConnectionManager.onConnectionStateChange(this.handleConnectionStateChange.bind(this));
+    PeerConnectionManager.setNameResolver((id) => this.getDeviceName(id));
+    PeerConnectionManager.on('error', ({ message, deviceId }) => {
+      this.emit('error', { message, deviceId });
+    });
+    
+    // Smooth Progress: Listen to logical chunks (1 of 400, 2 of 400...)
+    // instead of low-level BLE radio bytes.
+    PeerConnectionManager.onProgress = (deviceId, messageId, current, total) => {
+      // Map the physical transmission to the logical transfer via expected chunk size
+      const incoming = this.incomingTransfers.get(total);
+      
+      if (incoming) {
+        // Heartbeat: Reset watchdog on every chunk arrival
+        this.startWatchdog(incoming.deviceId, incoming.hash);
+        
+        this.emit('transfer-progress', { 
+          deviceId: incoming.deviceId, 
+          received: current,
+          total: total,
+          hash: incoming.hash
+        });
+      }
+    };
   }
 
-  const socket = io(serverUrl, {
-    transports: ['websocket'],
-    reconnection: true,
-    reconnectionAttempts: 10,
-    reconnectionDelay: 2000,
-  });
+  on(event, callback) {
+    if (!this.listeners[event]) this.listeners[event] = [];
+    this.listeners[event].push(callback);
+  }
 
-  relays[serverUrl] = socket;
+  off(event, callback) {
+    if (!this.listeners[event]) return;
+    this.listeners[event] = this.listeners[event].filter((cb) => cb !== callback);
+  }
 
-  socket.on('connect', () => {
-    console.log(`[Mesh] Connected to relay: ${serverUrl}`);
-    socket.emit('join-mesh', { peerId: myPeerId, deviceName });
-    emit('connected', { peerId: myPeerId, relayUrl: serverUrl });
+  emit(event, data) {
+    if (!this.listeners[event]) return;
+    this.listeners[event].forEach((cb) => cb(data));
+  }
 
-    // Share catalog with this relay (which gossips to all its peers)
-    shareCatalogTo(serverUrl);
-  });
+  async start() {
+    if (this.started) return;
+    this.started = true;
 
-  socket.on('disconnect', () => {
-    console.log(`[Mesh] Disconnected from relay: ${serverUrl}`);
-    // Remove peers that were only known through this relay
-    for (const [pid, peer] of Object.entries(meshPeers)) {
-      if (peer.relayUrl === serverUrl) {
-        delete meshPeers[pid];
+    await this.refreshAdvertisingMetadata();
+    const meta = BLEManager.getLocalMetadata();
+    this.selfNodeId = meta.deviceId;
+
+    await BLEManager.startAdvertising(meta);
+    await BLEManager.startScanning();
+
+    this.emit('nearby-devices-update', this.getNearbyDevices());
+    this.emit('connected-peers-update', this.getConnectedPeers());
+    this.emit('mesh-radio-state', this.getRadioState());
+    this.emit('mesh-state', this.getNetworkStats());
+  }
+
+  async stop() {
+    if (!this.started) return;
+    this.started = false;
+
+    const peers = Array.from(this.connectedPeers.keys());
+    for (const deviceId of peers) {
+      await PeerConnectionManager.disconnectPeer(deviceId);
+    }
+
+    BLEManager.stopAdvertising();
+    BLEManager.stopScanning();
+
+    this.nearbyDevices.clear();
+    this.connectedPeers.clear();
+    this.peerCatalogs.clear();
+    
+    // Clear any active timeouts
+    this.activeRequests.forEach(timerId => clearTimeout(timerId));
+    this.activeRequests.clear();
+
+    this.emit('nearby-devices-update', []);
+    this.emit('connected-peers-update', []);
+    this.emit('mesh-radio-state', this.getRadioState());
+    this.emit('mesh-state', this.getNetworkStats());
+  }
+
+  async setScanning(enabled) {
+    if (enabled) {
+      await BLEManager.startScanning();
+    } else {
+      BLEManager.stopScanning();
+    }
+    this.emit('mesh-radio-state', this.getRadioState());
+  }
+
+  async setAdvertising(enabled) {
+    if (enabled) {
+      await this.refreshAdvertisingMetadata();
+      await BLEManager.startAdvertising(BLEManager.getLocalMetadata());
+    } else {
+      BLEManager.stopAdvertising();
+    }
+    this.emit('mesh-radio-state', this.getRadioState());
+  }
+
+  async restartMesh() {
+    await this.setAdvertising(false);
+    await this.setScanning(false);
+    await this.setAdvertising(true);
+    await this.setScanning(true);
+  }
+
+  getRadioState() {
+    return {
+      scanning: BLEManager.isScanning(),
+      advertising: BLEManager.isAdvertising(),
+    };
+  }
+
+  async refreshAdvertisingMetadata() {
+    const stats = await CacheManager.getStats();
+    const catalog = await CacheManager.getCatalog();
+    const hashPreview = catalog.slice(0, 5).map((p) => p.hash);
+    const myName = await CacheManager.getSetting('deviceName', 'Reality Cache Device');
+
+    await BLEManager.updateAdvertisingMetadata({
+      pageCount: stats.count,
+      deviceName: myName,
+      hashPreview,
+    });
+    this.selfNodeId = BLEManager.getLocalMetadata().deviceId;
+  }
+
+  getNearbyDevices() {
+    return Array.from(this.nearbyDevices.values());
+  }
+
+  getConnectedPeers() {
+    return Array.from(this.connectedPeers.values());
+  }
+
+  getPeerCatalog(deviceId) {
+    const entry = this.peerCatalogs.get(deviceId);
+    return entry ? entry.pages : [];
+  }
+
+  getPeerCatalogs() {
+    const out = {};
+    this.peerCatalogs.forEach((entry, deviceId) => {
+      out[deviceId] = entry; // entry is { deviceName, pages }
+    });
+    return out;
+  }
+
+  handleDeviceFound(device) {
+    this.nearbyDevices.set(device.deviceId, device);
+    
+    // Autonomous Discovery: If we don't have a catalog for this device yet,
+    // and weren't already connected, try to fetch it in the background.
+    if (!this.peerCatalogs.has(device.deviceId) && !this.connectedPeers.has(device.deviceId)) {
+        console.log(`[MeshManager] Autonomous sync starting for: ${device.deviceName || device.deviceId}`);
+        this.connectToDevice(device.deviceId).catch(e => {
+            console.warn(`[MeshManager] Auto-sync failed for ${device.deviceId}:`, e.message);
+        });
+    }
+
+    this.emit('nearby-devices-update', this.getNearbyDevices());
+    this.emit('mesh-state', this.getNetworkStats());
+  }
+
+  handleDeviceLost(device) {
+    this.nearbyDevices.delete(device.deviceId);
+    this.peerCatalogs.delete(device.deviceId); // PURGE stale catalog
+    this.emit('nearby-devices-update', this.getNearbyDevices());
+    this.emit('catalog-update', { deviceId: device.deviceId, pages: [] });
+    this.emit('mesh-state', this.getNetworkStats());
+  }
+
+  _upgradeConnectionIdentity(oldId, newId, bleDeviceId) {
+    if (!oldId || oldId === newId) return;
+    
+    console.log(`[MeshManager] Upgrading connection identity: ${oldId} -> ${newId}`);
+    this.bleIdMap.set(bleDeviceId, newId);
+    PeerConnectionManager.upgradeIdentity(oldId, newId);
+    
+    if (this.connectedPeers.has(oldId)) {
+       const peer = this.connectedPeers.get(oldId);
+       peer.deviceId = newId;
+       this.connectedPeers.set(newId, peer);
+       this.connectedPeers.delete(oldId);
+    }
+    
+    if (this.peerCatalogs.has(oldId)) {
+       this.peerCatalogs.set(newId, this.peerCatalogs.get(oldId));
+       this.peerCatalogs.delete(oldId);
+    }
+
+    if (this.incomingTransfers.has(oldId)) {
+       this.incomingTransfers.set(newId, this.incomingTransfers.get(oldId));
+       this.incomingTransfers.delete(oldId);
+    }
+
+    if (this.nearbyDevices.has(oldId)) {
+       const d = this.nearbyDevices.get(oldId);
+       d.deviceId = newId;
+       this.nearbyDevices.set(newId, d);
+       this.nearbyDevices.delete(oldId);
+    }
+  }
+
+  handleConnectionStateChange({ deviceId, state }) {
+    // Resolve logical deviceId: could be a bleDeviceId from an incoming connection
+    const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
+
+    if (state === 'connected') {
+      const device = this.nearbyDevices.get(resolvedId);
+      this.connectedPeers.set(resolvedId, {
+        ...(device || { deviceId: resolvedId, deviceName: `Peer-${resolvedId.slice(0, 6)}` }),
+        deviceId: resolvedId,
+        bleDeviceId: deviceId, // keep the transport-level ID
+      });
+      this.requestCatalog(resolvedId);
+    } else {
+      this.connectedPeers.delete(resolvedId);
+      this.peerCatalogs.delete(resolvedId);
+      
+      // Clean up any proxied catalogs that depended on this disconnected peer
+      for (const [nodeId, entry] of this.peerCatalogs.entries()) {
+        if (entry.via === resolvedId) {
+          this.peerCatalogs.delete(nodeId);
+          this.routingTable.delete(nodeId);
+        }
       }
     }
-    updateStats();
-    emit('disconnected', { relayUrl: serverUrl });
-  });
 
-  socket.on('connect_error', (error) => {
-    console.log(`[Mesh] Error on ${serverUrl}:`, error.message);
-    emit('error', { message: `Relay ${serverUrl}: ${error.message}` });
-  });
+    this.emit('connected-peers-update', this.getConnectedPeers());
+    this.emit('mesh-state', this.getNetworkStats());
+  }
 
-  // ── Full mesh state (sent on join) ─────────────────────────────────
-  socket.on('mesh-state', ({ peers: peerList, catalogs }) => {
-    // Ingest all catalogs from this relay
-    for (const [peerId, data] of Object.entries(catalogs)) {
-      if (peerId === myPeerId) continue;
-      meshPeers[peerId] = {
-        deviceName: data.deviceName,
-        catalog: data.catalog || [],
-        relayUrl: serverUrl,
-      };
-      // Track in peer history as active
-      peerHistory[peerId] = {
-        deviceName: data.deviceName,
-        active: true,
-        lastSeen: Date.now(),
-        relayUrl: serverUrl,
-      };
-    }
-    updateStats();
-    emit('mesh-state', { peers: peerList, catalogs });
-  });
+  async handleMessage({ deviceId, data }) {
+    if (!data || typeof data !== 'object') return;
 
-  // ── Peer history (includes inactive) ────────────────────────────
-  socket.on('peer-history', (history) => {
-    for (const peer of history) {
-      if (peer.peerId === myPeerId) continue;
-      // Only update if we don't already know them as active
-      if (!peerHistory[peer.peerId] || !peerHistory[peer.peerId].active) {
-        peerHistory[peer.peerId] = {
-          deviceName: peer.deviceName,
-          active: peer.active,
-          lastSeen: peer.lastSeen,
-          relayUrl: serverUrl,
-        };
-      }
-    }
-    emit('peer-history', history);
-  });
+    // Resolve logical ID from the message source
+    const resolvedId = this.bleIdMap.get(deviceId) || deviceId;
 
-  // ── Peer events ────────────────────────────────────────────────────
-  socket.on('peer-joined', ({ peerId, deviceName, totalPeers }) => {
-    if (peerId === myPeerId) return;
-    console.log(`[Mesh] Peer joined via ${serverUrl}: ${deviceName}`);
-    // Track in history as active
-    peerHistory[peerId] = {
-      deviceName,
-      active: true,
-      lastSeen: Date.now(),
-      relayUrl: serverUrl,
-    };
-    emit('peer-joined', { peerId, deviceName, totalPeers });
-    // Re-share our catalog so the new peer gets it
-    shareCatalogTo(serverUrl);
-  });
-
-  socket.on('peer-left', ({ peerId, totalPeers }) => {
-    // Only remove from active peers if we don't know them from another relay
-    const otherRelayHas = Object.entries(relays).some(([url, s]) =>
-      url !== serverUrl && s?.connected
-    );
-    if (!otherRelayHas) {
-      delete meshPeers[peerId];
-    }
-    // Mark inactive in history (don't delete)
-    if (peerHistory[peerId]) {
-      peerHistory[peerId].active = false;
-      peerHistory[peerId].lastSeen = Date.now();
-    }
-    updateStats();
-    emit('peer-left', { peerId, totalPeers });
-  });
-
-  // ── Catalog gossip ─────────────────────────────────────────────────
-  socket.on('catalog-update', ({ peerId, deviceName, catalog }) => {
-    if (peerId === myPeerId) return;
-    meshPeers[peerId] = {
-      deviceName,
-      catalog: catalog || [],
-      relayUrl: serverUrl,
-    };
-    updateStats();
-    emit('catalog-update', { peerId, deviceName, catalog });
-
-    // GOSSIP FORWARDING: if we're connected to other relays,
-    // forward this catalog update so it propagates further
-    forwardCatalog(serverUrl, peerId, deviceName, catalog);
-  });
-
-  // ── Content propagation notification ───────────────────────────────
-  socket.on('content-propagated', ({ hash, holderCount }) => {
-    emit('content-propagated', { hash, holderCount });
-  });
-
-  // ── Content request (someone asking US) ────────────────────────────
-  socket.on('content-requested', async ({ requesterPeerId, requesterSocketId, hash }) => {
-    console.log(`[Mesh] Content requested: ${hash.substring(0, 8)}...`);
-    try {
-      const html = await CacheManager.readHtml(hash);
-      if (!html) {
-        console.log(`[Mesh] Don't have ${hash.substring(0, 8)}... — can't serve`);
+    // Handle Routed Packets (Multi-hop)
+    if (data.type === 'ROUTED_PACKET') {
+      const { src, dest, ttl, payload } = data;
+      const srcName = this.getDeviceName(src);
+      const destName = this.getDeviceName(dest);
+      const relayName = this.getDeviceName(resolvedId);
+      
+      if (dest === this.selfNodeId) {
+        console.log(`[MeshManager] Received relayed message (${payload.type}) from ${srcName} (via ${relayName})`);
+        return this.handleMessage({ deviceId: src, data: payload, isRelayed: true, relayNodeId: resolvedId });
+      } else if (ttl > 0) {
+        console.log(`[MeshManager] Relaying message (${payload.type}) from ${srcName} to ${destName} (TTL: ${ttl})`);
+        return this.routeMessage(dest, payload, ttl - 1, src);
+      } else {
+        console.warn(`[MeshManager] Dropping routed packet from ${srcName} to ${destName}: TTL expired`);
         return;
       }
+    }
 
-      // Chunked transfer
-      const CHUNK_SIZE = 16 * 1024;
-      const totalChunks = Math.ceil(html.length / CHUNK_SIZE);
+    switch (data.type) {
+      case 'CATALOG':
+        // Identity Handshake: if the peer shared its true Node ID, upgrade immediately
+        if (data.nodeId && data.nodeId !== resolvedId) {
+            const bleDeviceId = this.connectedPeers.get(resolvedId)?.bleDeviceId || deviceId;
+            this._upgradeConnectionIdentity(resolvedId, data.nodeId, bleDeviceId);
+            // Re-resolve after upgrade
+            return this.handleMessage({ deviceId: data.nodeId, data });
+        }
 
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = html.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        socket.emit('send-content-chunk', {
-          targetSocketId: requesterSocketId,
-          hash,
-          chunkIndex: i,
-          totalChunks,
-          data: chunk,
+        // Handle logical name update
+        if (data.deviceName) {
+            const currentPeer = this.connectedPeers.get(resolvedId);
+            if (currentPeer) {
+                this.connectedPeers.set(resolvedId, { ...currentPeer, deviceName: data.deviceName });
+                this.emit('connected-peers-update', this.getConnectedPeers());
+            }
+            
+            const nearby = this.nearbyDevices.get(resolvedId);
+            if (nearby) {
+                this.nearbyDevices.set(resolvedId, { ...nearby, deviceName: data.deviceName });
+                this.emit('nearby-devices-update', this.getNearbyDevices());
+            }
+        }
+        
+        let catalogChanged = false;
+        if (!this.peerCatalogs.has(resolvedId)) {
+          catalogChanged = true;
+        }
+
+        this.peerCatalogs.set(resolvedId, {
+            deviceName: data.deviceName || `Peer-${resolvedId.slice(0, 8)}`,
+            pages: Array.isArray(data.pages) ? data.pages : []
         });
-        await new Promise((r) => setTimeout(r, 50));
+
+        // Proxy Diffusion: Process nodes reachable via this peer
+        if (Array.isArray(data.proxies)) {
+          data.proxies.forEach(proxy => {
+            if (proxy.deviceId === this.selfNodeId) return; // Ignore self
+            
+            if (!this.routingTable.has(proxy.deviceId)) {
+              catalogChanged = true;
+            }
+
+            this.routingTable.set(proxy.deviceId, {
+              nextHop: resolvedId,
+              distance: (data.distance || 1) + 1,
+              timestamp: Date.now()
+            });
+
+            this.peerCatalogs.set(proxy.deviceId, {
+              deviceName: proxy.deviceName,
+              pages: proxy.pages,
+              via: resolvedId
+            });
+          });
+        }
+
+        this.emit('catalog-update', { deviceId: resolvedId, pages: this.getPeerCatalog(resolvedId) });
+        this.emit('mesh-state', this.getNetworkStats());
+        
+        if (catalogChanged) {
+          this.shareCatalog(); // Gossip new findings across mesh
+        }
+        break;
+
+      case 'REQUEST_CATALOG':
+        await this.sendCatalog(deviceId);
+        break;
+
+      case 'PAGE_DATA':
+        if (data.hash && data.url && data.title && typeof data.html === 'string') {
+          await CacheManager.storeMeshContent(data.hash, data.url, data.title, data.html);
+          
+          // Clear transfer tracking
+          const timerId = this.activeRequests.get(data.hash);
+          if (timerId) {
+            clearTimeout(timerId);
+            this.activeRequests.delete(data.hash);
+          }
+          
+          // Cleanup map using hash
+          for (const [total, incoming] of this.incomingTransfers.entries()) {
+            if (incoming.hash === data.hash) {
+              this.incomingTransfers.delete(total);
+            }
+          }
+
+          await this.refreshAdvertisingMetadata();
+          this.emit('page-received', {
+            hash: data.hash,
+            title: data.title,
+            deviceId,
+          });
+        }
+        break;
+
+      case 'REQUEST_PAGE':
+        await this.sendPage(deviceId, data.hash);
+        break;
+
+      case 'PERMISSION_PENDING':
+        this.emit('permission-pending', { deviceId, hash: data.hash });
+        break;
+
+      case 'PERMISSION_DENIED':
+        // Clear watchdog timer
+        const denyTimerId = this.activeRequests.get(data.hash);
+        if (denyTimerId) {
+          clearTimeout(denyTimerId);
+          this.activeRequests.delete(data.hash);
+        }
+
+        this.emit('error', {
+          deviceId,
+          hash: data.hash,
+          message: `Peer denied permission to download: ${data.title || 'Private content'}`,
+        });
+        break;
+
+      case 'PAGE_NOT_FOUND':
+        this.emit('error', {
+          deviceId,
+          hash: data.hash,
+          message: `Peer could not find content for hash: ${data.hash}`,
+        });
+        break;
+
+      case 'TRANSFER_START':
+        this.incomingTransfers.set(data.totalChunks, { 
+            hash: data.hash, 
+            deviceId: resolvedId 
+        });
+        this.emit('transfer-progress', {
+          deviceId: resolvedId,
+          hash: data.hash,
+          received: 0,
+          total: data.totalChunks,
+          title: data.title
+        });
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  async connectToDevice(deviceId) {
+    // Look up the BLE hardware address from the discovered device
+    const device = this.nearbyDevices.get(deviceId);
+    const bleId = device?.bleDeviceId || deviceId;
+
+    // 1. Stop scanning before connecting — critical for Android stability
+    if (BLEManager.isScanning()) {
+      await BLEManager.stopScanning();
+      // Give the radio a moment to settle
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Store the mapping so incoming messages can be resolved
+    this.bleIdMap.set(bleId, deviceId);
+
+    // Pass both the hardware address and the logical user-friendly ID
+    await PeerConnectionManager.connectToPeer(bleId, deviceId);
+  }
+
+  async disconnectDevice(deviceId) {
+    await PeerConnectionManager.disconnectPeer(deviceId);
+  }
+
+  requestCatalog(deviceId) {
+    return this.routeMessage(deviceId, { type: 'REQUEST_CATALOG' });
+  }
+
+  requestPage(deviceId, hash) {
+    this.startWatchdog(deviceId, hash);
+    return this.routeMessage(deviceId, { type: 'REQUEST_PAGE', hash });
+  }
+
+  startWatchdog(deviceId, hash) {
+    // Clear any existing timer for this hash
+    if (this.activeRequests.has(hash)) {
+        clearTimeout(this.activeRequests.get(hash));
+    }
+
+    const timerId = setTimeout(() => {
+        if (this.activeRequests.has(hash)) {
+            this.activeRequests.delete(hash);
+            this.emit('error', {
+                deviceId,
+                hash,
+                message: 'Request Timed Out: Peer is unresponsive or out of range.'
+            });
+        }
+    }, 15000); // 15s absolute silence timeout
+
+    this.activeRequests.set(hash, timerId);
+  }
+
+  async sendCatalog(deviceId) {
+    const catalog = await CacheManager.getCatalog();
+    const pages = catalog.map(({ hash, title, url, isPrivate }) => ({ hash, title, url, isPrivate }));
+    const myName = await CacheManager.getSetting('deviceName', 'Reality Cache Device');
+    
+    const proxies = [];
+    this.peerCatalogs.forEach((entry, nodeId) => {
+      // Only share local catalogs (not relayed ones) to prevent infinite loops
+      if (nodeId !== deviceId && !entry.via) {
+        proxies.push({
+          deviceId: nodeId,
+          deviceName: entry.deviceName,
+          pages: entry.pages
+        });
       }
-
-      const pages = await CacheManager.getCatalog();
-      const page = pages.find((p) => p.hash === hash);
-
-      socket.emit('send-content-complete', {
-        targetSocketId: requesterSocketId,
-        hash,
-        title: page?.title || 'Untitled',
-        url: page?.url || '',
-        mimeType: 'text/html',
-        size: html.length,
-      });
-    } catch (e) {
-      console.log('[Mesh] Error serving content:', e.message);
-    }
-  });
-
-  // ── Receiving content chunks ───────────────────────────────────────
-  socket.on('content-chunk', ({ hash, chunkIndex, totalChunks, data }) => {
-    if (!contentBuffer[hash]) {
-      contentBuffer[hash] = { chunks: new Array(totalChunks), received: 0, totalChunks };
-    }
-    contentBuffer[hash].chunks[chunkIndex] = data;
-    contentBuffer[hash].received++;
-    emit('download-progress', { hash, progress: contentBuffer[hash].received / totalChunks });
-  });
-
-  socket.on('content-complete', async ({ hash, title, url, mimeType, size }) => {
-    const buffer = contentBuffer[hash];
-    if (!buffer) return;
-    const html = buffer.chunks.join('');
-    delete contentBuffer[hash];
-
-    const result = await CacheManager.storeMeshContent(hash, url, title, html);
-    emit('content-received', { hash, title, url, size, deduplicated: result.deduplicated });
-
-    // After receiving new content, gossip our updated catalog to ALL relays
-    shareCatalog();
-  });
-
-  socket.on('content-unavailable', ({ hash }) => {
-    emit('content-unavailable', { hash });
-  });
-
-  // ── Search ─────────────────────────────────────────────────────────
-  socket.on('search-query', async ({ query, requestId, requesterSocketId }) => {
-    const results = await CacheManager.search(query);
-    const trimmed = results.map((r) => ({
-      hash: r.hash,
-      url: r.url,
-      title: r.title,
-      size: r.size,
-      accessCount: r.accessCount,
-    }));
-    socket.emit('search-results', {
-      targetSocketId: requesterSocketId,
-      requestId,
-      results: trimmed,
     });
-  });
 
-  socket.on('search-response', ({ requestId, results, source }) => {
-    emit('search-response', { requestId, results, source });
-  });
-}
+    return this.routeMessage(deviceId, { 
+        type: 'CATALOG', 
+        nodeId: this.selfNodeId,
+        pages,
+        deviceName: myName,
+        proxies
+    });
+  }
 
-// ─── Gossip Forwarding ───────────────────────────────────────────────
-// When we receive a catalog from Relay A, forward it to Relay B, C, etc.
-// This is how the mesh propagates across multiple relay nodes.
+  async shareCatalog() {
+    const peers = Array.from(this.connectedPeers.keys());
+    await Promise.all(peers.map((deviceId) => this.sendCatalog(deviceId)));
+  }
 
-function forwardCatalog(sourceRelayUrl, peerId, deviceName, catalog) {
-  for (const [url, socket] of Object.entries(relays)) {
-    if (url !== sourceRelayUrl && socket?.connected) {
-      // Don't re-share, just emit a catalog update for this peer
-      // The relay will handle dedup
-      socket.emit('catalog-share', catalog);
+  async sendPage(deviceId, hash, approved = false) {
+    if (!hash) return;
+
+    const page = await CacheManager.getByHash(hash);
+    if (!page) {
+      this.routeMessage(deviceId, {
+        type: 'PAGE_NOT_FOUND',
+        hash,
+      });
+      return;
     }
+
+    // Check privacy
+    if (page.isPrivate && !approved) {
+      // Add to pending
+      if (!this.pendingRequests.has(hash)) {
+        this.pendingRequests.set(hash, new Set());
+      }
+      this.pendingRequests.get(hash).add(deviceId);
+
+      // Notify owner locally
+      this.emit('permission-requested', {
+        deviceId,
+        hash,
+        title: page.title,
+        peerName: this.connectedPeers.get(deviceId)?.deviceName || 'Unknown Peer',
+      });
+
+      // Notify requester
+      this.routeMessage(deviceId, {
+        type: 'PERMISSION_PENDING',
+        hash,
+      });
+      return;
+    }
+    
+    // Calculate total logical chunks (150 bytes each)
+    const rawPayload = JSON.stringify({
+      type: 'PAGE_DATA',
+      hash: page.hash,
+      html: page.html,
+      title: page.title,
+      url: page.url,
+      assets: [],
+    });
+    const totalChunks = Math.ceil(rawPayload.length / 150);
+
+    // Announce transfer start for progress tracking
+    await this.routeMessage(deviceId, {
+        type: 'TRANSFER_START',
+        hash: page.hash,
+        totalChunks: totalChunks,
+        title: page.title
+    });
+
+    this.routeMessage(deviceId, {
+      type: 'PAGE_DATA',
+      hash: page.hash,
+      html: page.html,
+      title: page.title,
+      url: page.url,
+      assets: [],
+    });
   }
-}
 
-// ─── Share catalog to a specific relay ───────────────────────────────
-
-async function shareCatalogTo(relayUrl) {
-  const socket = relays[relayUrl];
-  if (!socket?.connected) return;
-  try {
-    const catalog = await CacheManager.getCatalog();
-    socket.emit('catalog-share', catalog);
-  } catch (e) {
-    console.log('[Mesh] Error sharing catalog:', e.message);
+  async approveRequest(deviceId, hash) {
+    const set = this.pendingRequests.get(hash);
+    if (set) set.delete(deviceId);
+    await this.sendPage(deviceId, hash, true);
   }
-}
 
-// ─── Share catalog to ALL connected relays (gossip) ──────────────────
+  async denyRequest(deviceId, hash) {
+    const set = this.pendingRequests.get(hash);
+    if (set) set.delete(deviceId);
+    
+    const page = await CacheManager.getByHash(hash);
+    this.routeMessage(deviceId, {
+      type: 'PERMISSION_DENIED',
+      hash,
+      title: page?.title,
+    });
+  }
 
-export async function shareCatalog() {
-  try {
-    const catalog = await CacheManager.getCatalog();
-    for (const [url, socket] of Object.entries(relays)) {
-      if (socket?.connected) {
-        socket.emit('catalog-share', catalog);
+  searchPeers(query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return [];
+
+    const results = [];
+    const seen = new Set();
+
+    for (const [deviceId, entry] of this.peerCatalogs.entries()) {
+      const { pages } = entry;
+      for (const page of pages) {
+        const title = (page.title || '').toLowerCase();
+        const url = (page.url || '').toLowerCase();
+        if (title.includes(q) || url.includes(q)) {
+          if (!seen.has(page.hash)) {
+            seen.add(page.hash);
+            results.push({ ...page, source: 'mesh', deviceId });
+          }
+        }
       }
     }
-  } catch (e) {
-    console.log('[Mesh] Error sharing catalog:', e.message);
+
+    return results;
   }
-}
 
-// ─── Request content (tries all relays) ──────────────────────────────
+  getNetworkStats() {
+    const uniquePeerHashes = new Set();
+    this.peerCatalogs.forEach((entry) => {
+      const { pages } = entry;
+      pages.forEach((item) => {
+        if (item?.hash) uniquePeerHashes.add(item.hash);
+      });
+    });
 
-export function requestContent(targetPeerId, hash) {
-  // Send request through ALL connected relays for maximum redundancy
-  // The relay will route to whichever holder is available
-  let sent = false;
-  for (const [url, socket] of Object.entries(relays)) {
-    if (socket?.connected) {
-      socket.emit('request-content', { targetPeerId, hash });
-      sent = true;
-      break; // Send through the first connected relay — relay handles routing
+    return {
+      nearbyDevices: this.nearbyDevices.size,
+      connectedPeers: this.connectedPeers.size,
+      peerPages: uniquePeerHashes.size,
+    };
+  }
+
+  handleScanStateChange() {
+    this.emit('mesh-radio-state', this.getRadioState());
+  }
+
+  handleAdvertisingStateChange() {
+    this.emit('mesh-radio-state', this.getRadioState());
+  }
+
+  getKnowledgeRadius() {
+    const stats = this.getNetworkStats();
+    return {
+      totalPages: stats.peerPages,
+      totalDevices: stats.connectedPeers,
+    };
+  }
+
+  isConnected() {
+    return this.connectedPeers.size > 0;
+  }
+
+  getDeviceName(deviceId) {
+    if (deviceId === this.selfNodeId) return 'Me';
+    return this.connectedPeers.get(deviceId)?.deviceName || 
+           this.peerCatalogs.get(deviceId)?.deviceName || 
+           `Peer-${deviceId?.slice(0, 8)}`;
+  }
+
+  /**
+   * Non-invasive Smart Routing
+   */
+  async routeMessage(destinationId, payload, ttl = 3, customSrc = null) {
+    if (!destinationId) return false;
+    const sourceId = customSrc || this.selfNodeId;
+
+    // 1. Point-to-Point Match (Unmodified Native Flow)
+    if (this.connectedPeers.has(destinationId) && sourceId === this.selfNodeId) {
+      console.log(`[MeshManager] Sending payload (${payload.type}) direct to ${this.getDeviceName(destinationId)}`);
+      return PeerConnectionManager.sendMessage(destinationId, payload);
     }
-  }
-  if (sent) {
-    emit('download-started', { hash, targetPeerId });
-  }
-}
-
-// ─── Auto Sync ───────────────────────────────────────────────────────
-
-export async function autoSync() {
-  const localCatalog = await CacheManager.getCatalog();
-  const localHashes = new Set(localCatalog.map((p) => p.hash));
-  const toDownload = [];
-
-  for (const [peerId, peer] of Object.entries(meshPeers)) {
-    for (const item of peer.catalog) {
-      if (!localHashes.has(item.hash) && !toDownload.find((d) => d.hash === item.hash)) {
-        toDownload.push({ ...item, peerId });
-      }
+    // 2. Relaying (If we are forwarding an already routed packet)
+    else if (this.connectedPeers.has(destinationId)) {
+        console.log(`[MeshManager] Forwarding routed payload to direct connection ${this.getDeviceName(destinationId)}`);
+        return PeerConnectionManager.sendMessage(destinationId, {
+          type: 'ROUTED_PACKET',
+          src: sourceId,
+          dest: destinationId,
+          ttl: ttl,
+          payload
+        });
     }
-  }
 
-  emit('sync-started', { total: toDownload.length });
-
-  for (let i = 0; i < toDownload.length; i++) {
-    const item = toDownload[i];
-    requestContent(item.peerId, item.hash);
-    await new Promise((r) => setTimeout(r, 500));
-    emit('sync-progress', { current: i + 1, total: toDownload.length });
-  }
-
-  return toDownload.length;
-}
-
-// ─── Mesh Search (broadcast to ALL relays) ───────────────────────────
-
-export function searchMesh(query) {
-  const requestId = 'search-' + Date.now();
-  for (const [url, socket] of Object.entries(relays)) {
-    if (socket?.connected) {
-      socket.emit('search-mesh', { query, requestId });
+    // 3. Multi-Hop Action Required
+    const route = this.routingTable.get(destinationId);
+    if (route && this.connectedPeers.has(route.nextHop)) {
+      console.log(`[MeshManager] Routing payload to ${this.getDeviceName(destinationId)} via hop ${this.getDeviceName(route.nextHop)}`);
+      return PeerConnectionManager.sendMessage(route.nextHop, {
+        type: 'ROUTED_PACKET',
+        src: sourceId,
+        dest: destinationId,
+        ttl: ttl,
+        payload
+      });
     }
+
+    console.warn(`[MeshManager] No route to ${destinationId}`);
+    return false;
   }
-  return requestId;
 }
 
-// ─── Getters ─────────────────────────────────────────────────────────
-
-export function getKnowledgeRadius() {
-  return meshStats;
-}
-
-export function getMeshPeers() {
-  return meshPeers;
-}
-
-export function getAllPeersWithStatus() {
-  return peerHistory;
-}
-
-export function isConnected() {
-  return Object.values(relays).some((s) => s?.connected);
-}
-
-export function getConnectedRelays() {
-  const connected = [];
-  for (const [url, socket] of Object.entries(relays)) {
-    if (socket?.connected) {
-      connected.push(url);
-    }
-  }
-  return connected;
-}
-
-// ─── Disconnect ──────────────────────────────────────────────────────
-
-export function disconnectRelay(relayUrl) {
-  const socket = relays[relayUrl];
-  if (socket) {
-    socket.disconnect();
-    delete relays[relayUrl];
-  }
-  // Clean peers from that relay
-  for (const [pid, peer] of Object.entries(meshPeers)) {
-    if (peer.relayUrl === relayUrl) {
-      delete meshPeers[pid];
-    }
-  }
-  updateStats();
-  emit('disconnected', { relayUrl });
-}
-
-export function disconnect() {
-  for (const [url, socket] of Object.entries(relays)) {
-    if (socket) socket.disconnect();
-  }
-  relays = {};
-  meshPeers = {};
-  meshStats = { totalPages: 0, totalDevices: 0 };
-  // Mark all peers in history as inactive
-  for (const pid of Object.keys(peerHistory)) {
-    peerHistory[pid].active = false;
-    peerHistory[pid].lastSeen = Date.now();
-  }
-  emit('disconnected', {});
-}
-
-// ─── Internal ────────────────────────────────────────────────────────
-
-function updateStats() {
-  const allPages = new Set();
-  for (const peer of Object.values(meshPeers)) {
-    for (const item of peer.catalog) {
-      allPages.add(item.hash);
-    }
-  }
-  meshStats = {
-    totalPages: allPages.size,
-    totalDevices: Object.keys(meshPeers).length,
-  };
-  emit('stats-update', meshStats);
-}
+export default new MeshManager();
